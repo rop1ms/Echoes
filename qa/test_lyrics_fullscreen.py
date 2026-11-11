@@ -10,6 +10,10 @@ from pathlib import Path
 
 source = Path(__file__).with_name("ui_smoke.py").read_text("utf-8")
 exec(compile(source.split("win = None")[0], str(Path(__file__).with_name("ui_smoke.py")), "exec"))
+import json as _json  # noqa: E402
+_st = _json.loads((data / "settings.json").read_text("utf-8"))   # свой заголовок окна — как у пользователя
+_st["custom_titlebar"] = True
+(data / "settings.json").write_text(_json.dumps(_st), encoding="utf-8")
 import main  # noqa: E402
 
 main.WindowsMediaKeyFilter.register = lambda self: None
@@ -73,7 +77,7 @@ names = [t[0] for t in tools]
 check("t_style" in names and "t_find" in names, f"значки «Язык и оформление» и «Найти текст» в шапке ({names})")
 check(all(r.right() <= np_._geom()["lyrics"].left() for _n, r, _i, _a in tools), "значки — слева от кнопок «текст» и «очередь»")
 check(("t_ai" in names) == (not shell.l_ai.isHidden()), "значок ИИ — только когда кнопка ИИ нужна")
-img = win.grab().toImage()
+img = np_.grab().toImage()                                   # координаты значков — в координатах экрана
 for n_, r_, _i, _a in tools:
     cc = r_.center().toPoint()
     br = max(img.pixelColor(cc.x() + dx, cc.y() + dy).lightness() for dx in range(-8, 9) for dy in range(-8, 9))
@@ -93,6 +97,15 @@ img = np_.grab().toImage()
 c = img.pixelColor(gb.center().x(), gb.center().y())
 check(max(c.red(), c.green(), c.blue()) > 24, f"на месте панели текста — фон, а не чёрный прямоугольник ({c.name()})")
 check(shell.l_panel.updatesEnabled() and box.updatesEnabled(), "панель перерисовывается")
+tb = win.titlebar
+check(tb._now_playing_bg() is not None, "заголовок окна рисует под собой фон экрана")
+ti = tb.grab().toImage()
+x_empty = tb.btn_min.geometry().left() - 30                  # участок без надписей, перед кнопками окна
+ct = ti.pixelColor(x_empty, tb.height() // 2)
+cn = np_.grab().toImage().pixelColor(x_empty, 2)
+check(max(ct.red(), ct.green(), ct.blue()) > 24, f"заголовок окна не чёрный, а в цвет фона ({ct.name()})")
+check(max(abs(ct.red() - cn.red()), abs(ct.green() - cn.green()), abs(ct.blue() - cn.blue())) < 28,
+      f"на стыке заголовок и экран одного цвета ({ct.name()} и {cn.name()})")
 check(not hasattr(np_, "_paint_plain") and "tools" not in np_.TIPS, "кнопки «…» и своего показа текста больше нет")
 np_.activate("lyrics")
 settle(1.0)
@@ -103,7 +116,7 @@ settle(1.0)
 check(box.isVisible(), "и возвращается в «Тексте»")
 np_.close_mode(instant=True)
 settle(0.3)
-check(np_._cap is None and not box.isVisible(), "после закрытия заголовок окна снова системный, панель спрятана")
+check(not box.isVisible(), "после закрытия панель текста спрятана")
 
 shell.toggle_lyrics()                                        # открыть «Текст» и закрыть…
 settle(1.0)

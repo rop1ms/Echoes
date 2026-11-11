@@ -222,7 +222,22 @@ class TitleBar(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
         import wave_veil
-        if self.variant == "ya" and wave_veil.level() > 0:     # «Моя волна»: фон заголовка растворяется,
+        np_bg = self._now_playing_bg() if self.variant == "ya" else None
+        if np_bg is not None:                                  # «Сейчас играет» / «Текст»: под заголовком — тот же
+            bg, a = np_bg                                      # размытый фон обложки, отражённый от линии стыка,
+            p.fillRect(0, 0, W, H, QColor("#000000"))          # — заголовок и экран без шва
+            p.save()
+            p.setOpacity(a)
+            p.translate(0, H)
+            p.scale(1, -1)
+            p.drawPixmap(QRectF(0, 0, W, H), bg, QRectF(0, 0, bg.width(), min(H, bg.height())))
+            p.restore()
+            self._no_bg = True
+            try:
+                self._paint_ya(p, W, H)
+            finally:
+                self._no_bg = False
+        elif self.variant == "ya" and wave_veil.level() > 0:   # «Моя волна»: фон заголовка растворяется,
             p.fillRect(0, 0, W, H, QColor("#000000"))          # под ним — волна на всё окно; знаки остаются
             wave_veil.paint(self, p, 0)
             self._no_bg = True
@@ -233,6 +248,18 @@ class TitleBar(QWidget):
         else:
             getattr(self, f"_paint_{self.variant}")(p, W, H)
         p.end()
+
+    def _now_playing_bg(self):
+        """Фон открытого экрана «Сейчас играет»/«Текст» и насколько он проявлен, или None."""
+        try:
+            shell = getattr(self.win, "_ya", None)
+            np_ = shell.__dict__.get("_now_playing") if shell is not None else None
+            if np_ is None or not np_.isVisible() or np_._bgc is None or np_._op <= 0.0:
+                return None
+            t = max(0.0, min(1.0, np_._op))
+            return np_._bgc, 1.0 - (1.0 - t) ** 3
+        except Exception:                                      # noqa: BLE001
+            return None
 
     def _draw_brand(self, p, x, color, weight=QFont.Weight.ExtraBold, size=10, spacing=2.4, upper=True):
         f = QFont(self.font())

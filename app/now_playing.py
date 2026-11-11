@@ -12,8 +12,8 @@
 кнопки («Синхронизировать с ИИ», «Язык и оформление», «Найти текст вручную», «Теги трека») — значками в шапке,
 слева от «текста» и «очереди»; выезжают по очереди и плавно подсвечиваются (TOOLS). Слева — обложка
 и управление этого экрана. Отдельной страницы текста больше нет. Между режимами всё перетекает (раскладка,
-«Далее» уходит, панель проявляется). Заголовок окна Windows в это время красится в цвет фона обложки
-(DwmSetWindowAttribute, Windows 11), после закрытия — снова системный.
+«Далее» уходит, панель проявляется). Свой заголовок окна (titlebar.TitleBar) в это время рисует под собой этот же
+размытый фон, отражённый от стыка, — заголовок и экран без шва; после закрытия — снова свой чёрный.
 
 Как это сделано, чтобы ничего не тормозило:
   * обложка, тень, свечение и оба слоя фона готовятся в фоновом потоке (только QImage) — поток окна
@@ -30,15 +30,14 @@ from __future__ import annotations
 import bisect
 import math
 import random
-import sys
 import threading
 import time
 from pathlib import Path
 
 from frameclock import FrameTimer
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
-                         QRegion, QRadialGradient)
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap, QRegion,
+                         QRadialGradient)
 from PyQt6.QtWidgets import QToolTip, QWidget
 
 DRIFT = 56                      # на сколько пикселей второй слой фона больше окна с каждой стороны
@@ -302,8 +301,6 @@ class NowPlaying(QWidget):
         self._mode = "cover"           # "cover" — «Сейчас играет», "lyrics" — текст на весь экран
         self._lm = self._lm_to = 0.0   # 0 — раскладка «Сейчас играет», 1 — «Текст»; между ними — перетекание
         self._gm: dict = {}            # готовые раскладки обоих режимов для текущего размера
-        self._cap = None               # цвет, в который сейчас покрашен заголовок окна (None — системный)
-        self._cap_t = 0.0
         self._lyr_box = None           # кнопки и панель прежней страницы текста — в режиме «Текст»
         self._lyr_snap = None          # их снимок, пока они проявляются или гаснут
         self._tool_h: dict = {}        # плавная подсветка значков-кнопок: имя → 0..1
@@ -558,7 +555,6 @@ class NowPlaying(QWidget):
 
     def _finish_close(self):
         self._timer.stop()
-        self._caption(False)
         if self._lyr_box is not None:
             self._lyr_box.hide()
         self._under = None
@@ -576,6 +572,7 @@ class NowPlaying(QWidget):
         except RuntimeError:
             pass
         self._sync_lyrics_button()
+        self._titlebar_update()
         self.closed.emit()
 
     def _free_assets(self):
@@ -782,6 +779,7 @@ class NowPlaying(QWidget):
                 self._finish_close()
                 return
             self._set_opaque()
+            self._titlebar_update()
             dirty = True
         sh = self.shell
         t = sh.current_track()
@@ -872,10 +870,6 @@ class NowPlaying(QWidget):
             dirty = True
         if dirty:
             self.update()
-        if self._op_to >= 1.0 and self._op >= 0.5 and (self._cap is None or now - self._cap_t > 0.5):
-            self._caption(True)                                # заголовок окна — в цвет фона (не чаще 2 раз/с)
-        elif self._op_to <= 0.0 and self._op < 0.5 and self._cap is not None:
-            self._caption(False)
         fast = (self._op != self._op_to or self._xf < 1.0 or self._like_t < 1.0 or self._play_t < 1.0
                 or self._li_t < 1.0 or abs(target - self._scale) > 0.0005 or self._lm != self._lm_to
                 or self.__dict__.get("_tools_moving", False))
@@ -883,46 +877,14 @@ class NowPlaying(QWidget):
         if self._timer.interval() != want:
             self._timer.setInterval(want)
 
-    def _caption(self, on: bool):
-        """Заголовок окна Windows — в цвет верхнего края фона обложки; off — вернуть системный цвет."""
-        self._cap_t = time.monotonic()
-        if sys.platform != "win32":
-            return
+    def _titlebar_update(self):
+        """Свой заголовок окна рисует под собой фон этого экрана — перерисовать его вместе с фоном."""
         try:
-            import ctypes
-            win = self.window()
-            if win is None or not win.isVisible():
-                return
-            hwnd = int(win.winId())
-            dwm = ctypes.windll.dwmapi
-            caption, text = 35, 36                             # DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR (Windows 11)
-            if not on:
-                if self._cap is not None:
-                    d = ctypes.c_uint(0xFFFFFFFF)              # DWMWA_COLOR_DEFAULT
-                    dwm.DwmSetWindowAttribute(hwnd, caption, ctypes.byref(d), 4)
-                    dwm.DwmSetWindowAttribute(hwnd, text, ctypes.byref(d), 4)
-                self._cap = None
-                return
-            if self._bgc is None or self._bgc.width() < 8:
-                return
-            # среднее по верхней полосе фона (а не по самой кромке — она у размытых обложек темнее, и заголовок
-            # почти не отличался от обычного); в paintEvent верх фона потом плавно уходит ровно в этот цвет
-            img = self._bgc.copy(0, 0, self._bgc.width(), 72).toImage()
-            r = g = b = n = 0
-            for y in (2, 18, 36, 54, 70):
-                for x in range(0, img.width(), max(1, img.width() // 32)):
-                    c = img.pixelColor(x, min(y, img.height() - 1))
-                    r, g, b, n = r + c.red(), g + c.green(), b + c.blue(), n + 1
-            col = (r // n, g // n, b // n)
-            if self._cap is not None and max(abs(col[i] - self._cap[i]) for i in range(3)) < 3:
-                return
-            ref = ctypes.c_uint(col[0] | (col[1] << 8) | (col[2] << 16))
-            dwm.DwmSetWindowAttribute(hwnd, caption, ctypes.byref(ref), 4)
-            white = ctypes.c_uint(0x00FFFFFF)
-            dwm.DwmSetWindowAttribute(hwnd, text, ctypes.byref(white), 4)
-            self._cap = col
-        except Exception as e:                                 # noqa: BLE001
-            print("[now playing] caption:", e)
+            tb = getattr(self.win, "titlebar", None)
+            if tb is not None and tb.isVisible():
+                tb.update()
+        except RuntimeError:
+            pass
 
     def _compose_bg(self):
         """Свести фон в одну картинку: слой A + плывущий слой B (+ предыдущий трек при перетекании)."""
@@ -958,6 +920,7 @@ class NowPlaying(QWidget):
             p.drawPixmap(int(c.x() - cur.glow.width() / 2), int(c.y() - cur.glow.height() / 2 + cur.glow.height() * 0.02),
                          cur.glow)
         p.end()
+        self._titlebar_update()                                # фон «дышит» — и заголовок вместе с ним
 
     # ── геометрия ─────────────────────────────────────────────────────── #
 
@@ -1426,13 +1389,6 @@ class NowPlaying(QWidget):
                 p.drawPixmap(0, 0, self._bgc)
         else:
             p.fillRect(self.rect(), QColor(10, 10, 13))
-        cap = self._cap
-        if cap is not None:                                    # шов с заголовком окна: верх фона уходит ровно в его цвет,
-            band = 72                                          # и заголовок выглядит продолжением размытой обложки
-            grad = QLinearGradient(0, 0, 0, band)
-            grad.setColorAt(0.0, QColor(cap[0], cap[1], cap[2], 255))
-            grad.setColorAt(1.0, QColor(cap[0], cap[1], cap[2], 0))
-            p.fillRect(QRectF(0, 0, W, band), grad)
         cur, prev = self._cur, self._prev
         xf = _ease(self._xf) if prev is not None else 1.0
         acc = ya_decor.accent()
