@@ -594,14 +594,30 @@ def keybinds_card(win):
     note.setObjectName("YaSub")
     note.setWordWrap(True)
 
+    def read(edits) -> dict:
+        out = {}
+        for k, e in edits.items():
+            try:
+                out[k] = e.keySequence().toString()
+            except RuntimeError:                           # поле уже удалено (страницу пересобрали) — пропустить
+                pass
+        return out
+
     def save():
+        # Сначала — в настройки и на диск, потом регистрация клавиш: ошибка регистрации (или одно сломанное поле)
+        # раньше обрывала сохранение целиком, и после перезапуска сочетания возвращались к прежним.
         keys = (win.__dict__.get("_prefs") or {}).get("keys")      # карточку строят раньше install()
-        win.settings["keybinds"] = {k: e.keySequence().toString() for k, e in local_edits.items()}
-        win.settings["keybinds_global_map"] = {k: e.keySequence().toString() for k, e in global_edits.items()}
+        win.settings["keybinds"] = dict(binds(win), **read(local_edits))
+        gmap = dict(win.settings.get("keybinds_global_map") or {})
+        gmap.update(read(global_edits))
+        win.settings["keybinds_global_map"] = gmap
         win.settings.pop("keybinds_global", None)
-        if keys is not None:
-            keys.apply()
         _save(win)
+        if keys is not None:
+            try:
+                keys.apply()
+            except Exception as e:                         # noqa: BLE001
+                print("[prefs] keybinds apply:", e)
         msgs = []
         for name, values in (("в ECHOES", win.settings["keybinds"]), ("везде", win.settings["keybinds_global_map"])):
             seqs = [x for x in values.values() if x]
@@ -611,7 +627,15 @@ def keybinds_card(win):
         if keys is not None and keys.failed:
             msgs.append("Не работают везде (заняты другой программой или без Ctrl/Alt/Shift/Win): "
                         + ", ".join(keys.failed))
-        note.setText("  ·  ".join(msgs))
+        try:
+            note.setText("  ·  ".join(msgs))
+        except RuntimeError:
+            pass
+
+    later = QTimer(card)                                   # сохранить и без «редактирование закончено»:
+    later.setSingleShot(True)                              # сразу после того, как сочетание в поле изменилось
+    later.setInterval(400)
+    later.timeout.connect(save)
 
     def edit(seq, row, col, store, key):
         e = QKeySequenceEdit(QKeySequence(seq))
@@ -622,6 +646,7 @@ def keybinds_card(win):
         for le in e.findChildren(QLineEdit):
             le.setPlaceholderText("Нажмите сочетание")
         e.editingFinished.connect(save)
+        e.keySequenceChanged.connect(lambda _seq: later.start())
         g.addWidget(e, row, col)
         clr = QPushButton("✕")
         clr.setToolTip("Без клавиши")
