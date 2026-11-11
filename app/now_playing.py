@@ -8,8 +8,9 @@
 Открывается кликом по обложке в нижнем плеере и по Ctrl+Shift+N, закрывается по Esc и стрелкой.
 
 Режим «Текст» (кнопка текста в нижнем плеере или вверху экрана) — это прежняя страница текста, перенесённая
-сюда: её панель текста (LyricsScrollPanel: перевод, заливка строк, оформление) и её кнопки («Синхронизировать
-с ИИ», «Язык и оформление», «Найти текст вручную», «Теги трека») встают в правую колонку, а слева — обложка
+сюда: её панель текста (LyricsScrollPanel: перевод, заливка строк, оформление) встаёт в правую колонку, а её
+кнопки («Синхронизировать с ИИ», «Язык и оформление», «Найти текст вручную», «Теги трека») — значками в шапке,
+слева от «текста» и «очереди»; выезжают по очереди и плавно подсвечиваются (TOOLS). Слева — обложка
 и управление этого экрана. Отдельной страницы текста больше нет. Между режимами всё перетекает (раскладка,
 «Далее» уходит, панель проявляется). Заголовок окна Windows в это время красится в цвет фона обложки
 (DwmSetWindowAttribute, Windows 11), после закрытия — снова системный.
@@ -72,6 +73,15 @@ def _lerp_geom(a: dict, b: dict, t: float) -> dict:
         else:
             g[k] = vb if t >= 0.5 else va
     return g
+
+
+# кнопки прежней страницы текста — значками в шапке режима «Текст»: (имя, значок, кнопка оболочки, подсказка);
+# значок с «*» — свой (в наборе ya_icon такого нет), рисуется в NowPlaying._own_icon
+TOOLS = (("t_ai", "ai_sync", "l_ai", "Синхронизировать с ИИ: нейросеть послушает трек и расставит таймкоды"),
+         ("t_style", "*lang", "l_appearance", "Язык и оформление: перевод, шрифт, размер, стекло"),
+         ("t_find", "search", "l_find", "Найти текст вручную"),
+         ("t_tags", "*tag", "l_tags", "Теги трека: исполнитель, альбом, обложка"))
+TOOL_ONLY_SOMETIMES = ("l_ai", "l_tags")                 # эти — только когда нужны (как и на прежней странице)
 
 
 def _back(t: float) -> float:
@@ -296,6 +306,8 @@ class NowPlaying(QWidget):
         self._cap_t = 0.0
         self._lyr_box = None           # кнопки и панель прежней страницы текста — в режиме «Текст»
         self._lyr_snap = None          # их снимок, пока они проявляются или гаснут
+        self._tool_h: dict = {}        # плавная подсветка значков-кнопок: имя → 0..1
+        self._tool_in: dict = {}       # плавное появление/уход значка, когда кнопка становится (не)нужной: имя → 0..1
         self._lyr_a = 0.0
         self._under_key = None
         self._bus = _Bus(self)
@@ -358,15 +370,15 @@ class NowPlaying(QWidget):
         v = QVBoxLayout(box)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(12)
-        v.addWidget(top)
-        v.addWidget(panel, 1)
+        v.addWidget(top)                                       # кнопки остаются тут (их состояние ведёт оболочка),
+        v.addWidget(panel, 1)                                  # но видны значками в шапке экрана
         col = getattr(sh, "l_collapse", None)
         if col is not None:                                    # свернуть — стрелкой экрана слева вверху
             col.hide()
         # своя подложка панели (кусок фона страницы) здесь не нужна: панель прозрачная, под ней живой фон экрана
         # (с подложкой из этого фона кусок под панелью выходил чёрным)
         panel.set_backdrop(None)
-        top.show()
+        top.hide()
         panel.show()
         box.hide()
         return box
@@ -847,6 +859,8 @@ class NowPlaying(QWidget):
             if sig != [(str(t_.get("path", "")), t_.get("title"), t_.get("cover")) for t_, _ in self._nexts]:
                 dirty = True
             self._nexts = nx
+        if self._lm > 0.0 and self._tools_tick(dt, ms):          # значки-кнопки «Текста»: подсветка, появление
+            dirty = True
         if self._lm != self._lm_to:                            # «Сейчас играет» ↔ «Текст»
             step = dt * 1000.0 / max(1.0, self._dur_ms(560))
             self._lm = min(self._lm_to, self._lm + step) if self._lm_to > self._lm else max(self._lm_to, self._lm - step)
@@ -863,7 +877,8 @@ class NowPlaying(QWidget):
         elif self._op_to <= 0.0 and self._op < 0.5 and self._cap is not None:
             self._caption(False)
         fast = (self._op != self._op_to or self._xf < 1.0 or self._like_t < 1.0 or self._play_t < 1.0
-                or self._li_t < 1.0 or abs(target - self._scale) > 0.0005 or self._lm != self._lm_to)
+                or self._li_t < 1.0 or abs(target - self._scale) > 0.0005 or self._lm != self._lm_to
+                or self.__dict__.get("_tools_moving", False))
         want = 8 if fast else 33                               # движение — каждый кадр общих часов, покой — 30 раз/с
         if self._timer.interval() != want:
             self._timer.setInterval(want)
@@ -1067,6 +1082,10 @@ class NowPlaying(QWidget):
         for name in ("back", "lyrics", "queue", "like", "shuffle", "prev", "play", "next", "repeat"):
             if g[name].contains(pos):
                 return name
+        if g.get("lm", 0.0) > 0.5:
+            for name, r, _icon, _a in self._tools(g):
+                if r.contains(pos):
+                    return name
         for k, r in enumerate(g["next_rows"]):
             if r.contains(pos):
                 return ("row", k)
@@ -1130,6 +1149,8 @@ class NowPlaying(QWidget):
         if e.type() == QEvent.Type.ToolTip:
             h = self._hit(QPointF(e.pos()))
             tip = self.TIPS.get(h) if isinstance(h, str) else None
+            if isinstance(h, str) and h.startswith("t_"):
+                tip = self._tool_tip(h)
             if tip:
                 QToolTip.showText(e.globalPos(), tip, self)
             else:
@@ -1144,6 +1165,10 @@ class NowPlaying(QWidget):
             self.close_mode()
         elif what == "lyrics":                                 # «Сейчас играет» ↔ «Текст» — на этом же экране
             self.set_mode("cover" if self._mode == "lyrics" else "lyrics")
+        elif isinstance(what, str) and what.startswith("t_"):   # значок — та же кнопка прежней страницы
+            b = self._tool_button(what)
+            if b is not None:
+                b.click()
         elif what == "queue":
             self.close_mode(instant=True)
             if sh._cur_page != "queue":
@@ -1459,6 +1484,8 @@ class NowPlaying(QWidget):
             on = name == "lyrics" and lm > 0.5
             self._named_icon(p, name, icon, g[name], size, op, 1.0 if on else 0.78,
                              ya_decor.accent().name() if on else "#ffffff")
+        if lm > 0.0:
+            self._paint_tools(p, g, op, lm, ya_decor.accent())
         f = ya_font(11, QFont.Weight.Bold)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
         p.setFont(f)
@@ -1566,6 +1593,150 @@ class NowPlaying(QWidget):
             p.setOpacity(self._lyr_a)
             p.drawPixmap(box.pos(), snap)
         p.end()
+
+    # ── значки-кнопки режима «Текст» ─────────────────────────────────── #
+
+    def _tool_button(self, name):
+        for n, _icon, attr, _tip in TOOLS:
+            if n == name:
+                return getattr(self.shell, attr, None)
+        return None
+
+    def _tool_wanted(self, attr) -> bool:
+        b = getattr(self.shell, attr, None)
+        if b is None:
+            return False
+        return attr not in TOOL_ONLY_SOMETIMES or not b.isHidden()   # isHidden — своё состояние, не родителя
+
+    def _tools(self, g):
+        """Значки справа налево от «текста»: (имя, место, значок, появление 0..1). Ушедший значок место освобождает
+        плавно: соседи сдвигаются, а не прыгают."""
+        out = []
+        x = g["lyrics"].left() - 6
+        top = g["lyrics"].top()
+        for name, icon, attr, _tip in TOOLS[::-1]:            # ближе к «тексту» — теги, дальше всех — ИИ
+            a = self._tool_in.get(name, 1.0 if self._tool_wanted(attr) else 0.0)
+            if a <= 0.0:
+                continue
+            x -= 50.0 * _ease(a)
+            out.append((name, QRectF(x, top, 44, 44), icon, a))
+        return out
+
+    def _tools_tick(self, dt: float, ms: float) -> bool:
+        """Плавно: подсветка под курсором и появление/уход значка, когда кнопка становится (не)нужной."""
+        moving = False
+        k = 1.0 if ms <= 0 else min(1.0, dt * 1000.0 / max(1.0, self._dur_ms(180)))
+        kin = 1.0 if ms <= 0 else min(1.0, dt * 1000.0 / max(1.0, self._dur_ms(320)))
+        for name, _icon, attr, _tip in TOOLS:
+            h0 = self._tool_h.get(name, 0.0)
+            h1 = 1.0 if self._hover == name else 0.0
+            if h0 != h1:
+                self._tool_h[name] = h1 if abs(h1 - h0) <= k else h0 + (k if h1 > h0 else -k)
+                moving = True
+            i0 = self._tool_in.get(name)
+            i1 = 1.0 if self._tool_wanted(attr) else 0.0
+            if i0 is None:
+                self._tool_in[name] = i1
+            elif i0 != i1:
+                self._tool_in[name] = min(i1, i0 + kin) if i1 > i0 else max(i1, i0 - kin)
+                moving = True
+        ai = getattr(self.win, "_ai", None)
+        if ai and ai.get("running"):
+            moving = True                                      # пока ИИ слушает трек — кольцо вокруг значка дышит
+        self._tools_moving = moving
+        return moving
+
+    def _tool_tip(self, name) -> str:
+        tip = next((t for n, _i, _a, t in TOOLS if n == name), "")
+        if name == "t_ai":
+            ai = getattr(self.win, "_ai", None)
+            if ai and ai.get("running"):
+                st = ai.get("status") or ""
+                tip = "Отменить синхронизацию с ИИ" + (" · " + st if st else "")
+        return tip
+
+    def _paint_tools(self, p, g, op: float, lm: float, acc: QColor):
+        """Значки выезжают по очереди при входе в «Текст» (ближний к «тексту» — первым) и уходят при выходе."""
+        ai = getattr(self.win, "_ai", None)
+        running = bool(ai and ai.get("running"))
+        tools = self._tools(g)
+        n = max(1, len(tools))
+        for k, (name, r, icon, a_in) in enumerate(tools):
+            stagger = k / n * 0.45
+            a = max(0.0, min(1.0, (lm - stagger) / max(0.01, 1.0 - stagger))) * a_in
+            if a <= 0.0:
+                continue
+            e = _ease(a)
+            rr = r.translated(14.0 * (1.0 - e), 0.0)             # выезжают к своему месту
+            h = self._tool_h.get(name, 0.0)
+            down = self._down == name
+            if h > 0.0 or down:                                # подсветка разгорается, а не появляется рывком
+                p.setOpacity(op * e)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(255, 255, 255, 44 if down else int(26 * h)))
+                rad = rr.width() / 2 * (0.82 + 0.18 * h)
+                p.drawEllipse(rr.center(), rad, rad)
+            if name == "t_ai" and running:                     # ИИ слушает трек — кольцо дышит
+                t = time.monotonic()
+                ring = 17.0 + 2.0 * math.sin(t * 4.0)
+                p.setOpacity(op * e * (0.45 + 0.35 * math.sin(t * 4.0)))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(acc, 1.8))
+                p.drawEllipse(rr.center(), ring, ring)
+            p.setOpacity(op * e * (0.78 + 0.22 * h))
+            s = 20 * (0.9 if down else (1.0 + 0.06 * h))
+            c = rr.center()
+            box = QRectF(c.x() - s / 2, c.y() - s / 2, s, s)
+            col = acc if (name == "t_ai" and running) else QColor(255, 255, 255)
+            if icon.startswith("*"):
+                self._own_icon(p, icon[1:], box, col)
+            else:
+                from yamusic_theme import ya_icon
+                ya_icon(icon, 20, col.name()).paint(p, box.toRect())
+
+    @staticmethod
+    def _own_icon(p, kind: str, r: QRectF, col: QColor):
+        """Свои значки (в наборе ya_icon таких нет): «Язык и оформление» и «Теги трека». Сетка 24×24."""
+        p.save()
+        p.translate(r.left(), r.top())
+        p.scale(r.width() / 24.0, r.height() / 24.0)
+        p.setPen(QPen(col, 1.9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if kind == "lang":                                     # буква «A» со строкой под ней (язык) и кисть (оформление)
+            a = QPainterPath()                                 # «A» слева
+            a.moveTo(2.5, 16.0)
+            a.lineTo(6.5, 4.5)
+            a.lineTo(10.5, 16.0)
+            a.moveTo(4.0, 12.0)
+            a.lineTo(9.0, 12.0)
+            p.drawPath(a)
+            p.drawLine(QPointF(2.5, 20.0), QPointF(10.5, 20.0))
+            p.drawLine(QPointF(21.0, 3.0), QPointF(17.6, 7.8))     # кисть справа, отдельно от буквы
+            p.setBrush(col)
+            tip = QPainterPath()
+            tip.moveTo(17.6, 7.8)
+            tip.cubicTo(16.0, 7.9, 15.6, 9.6, 15.2, 11.4)
+            tip.cubicTo(17.0, 11.2, 18.6, 10.7, 18.7, 9.2)
+            tip.closeSubpath()
+            p.drawPath(tip)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLine(QPointF(14.5, 16.0), QPointF(21.0, 16.0))  # мазки оформления
+            p.drawLine(QPointF(14.5, 20.0), QPointF(19.0, 20.0))
+        elif kind == "tag":                                    # ярлычок с дырочкой и нотой
+            t = QPainterPath()
+            t.moveTo(3.5, 4.5)
+            t.lineTo(12.5, 4.5)
+            t.lineTo(20.5, 12.5)
+            t.lineTo(12.5, 20.5)
+            t.lineTo(3.5, 11.5)
+            t.closeSubpath()
+            p.drawPath(t)
+            p.drawEllipse(QPointF(7.6, 8.6), 1.4, 1.4)
+            p.drawLine(QPointF(12.6, 15.2), QPointF(12.6, 10.0))
+            p.drawLine(QPointF(12.6, 10.0), QPointF(15.2, 11.0))
+            p.setBrush(col)
+            p.drawEllipse(QPointF(11.4, 15.4), 1.6, 1.3)
+        p.restore()
 
     def _named_icon(self, p, name, icon, r: QRectF, size, op, alpha=1.0, color="#ffffff", zoom=1.0):
         from yamusic_theme import ya_icon
