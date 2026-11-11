@@ -3595,6 +3595,13 @@ class YaShell(QWidget):
             raise
 
     def _show_page(self, key, remember=True):
+        if key == "lyrics":                                    # текст — только на весь экран (now_playing, «Текст»)
+            np_ = self.__dict__.get("_now_playing")
+            if np_ is not None and np_.is_open():
+                np_.set_mode("lyrics")
+            else:
+                self.open_now_playing(mode="lyrics")
+            return
         if key == "listening":
             self._ensure_listening_tools()
             key = "settings"
@@ -4097,7 +4104,7 @@ class YaShell(QWidget):
             if self._cur_page in ("collection",) and self._timer.interval():
                 self._rebuild(self._cur_page)
         # текст
-        if self._cur_page == "lyrics":
+        if self._cur_page == "lyrics" or self.lyrics_full_open():
             self._lyrics_tick(None, dur)           # позиция — плавная, см. ниже
 
     def _on_track_changed(self, t):
@@ -5351,7 +5358,7 @@ class YaShell(QWidget):
         if np_ is None:
             from now_playing import NowPlaying
             np_ = self._now_playing = NowPlaying(self)
-        np_.open(mode)
+        np_.open(mode or "cover")                              # обложка — «Сейчас играет», кнопка текста — «Текст»
 
     def close_now_playing(self, instant=False):
         np_ = self.__dict__.get("_now_playing")
@@ -6195,6 +6202,7 @@ class YaShell(QWidget):
         b.setStyleSheet(LYR_GLASS_BTN.replace("border-radius:18px", "border-radius:20px").replace("padding:0 14px", "padding:0"))
         b.clicked.connect(self.toggle_lyrics)
         top.addWidget(b)
+        self.l_top, self.l_collapse = top_holder, b            # кнопки уезжают на экран «Текст» (now_playing)
         rcol.addWidget(top_holder)
         self.l_panel = LyricsScrollPanel()
         self.l_panel.liquid = self.win.settings.get("lyrics_liquid", True)   # строка заливается белым по буквам
@@ -6275,17 +6283,11 @@ class YaShell(QWidget):
         if self._cur_page == "lyrics":
             self.go_back()
             return
-        try:
-            self.open_now_playing(mode="lyrics")
-        except Exception as e:                                 # noqa: BLE001
-            print("[lyrics] full screen:", e)
-            self.show_lyrics_tools()
+        self.open_now_playing(mode="lyrics")
 
-    def show_lyrics_tools(self):
-        """Прежняя страница текста: поиск вручную, синхронизация с ИИ, язык и оформление."""
-        self._lyr_src = None
-        self.show_page("lyrics")
-        self._lyrics_tick(None, None)
+    def lyrics_full_open(self) -> bool:
+        np_ = self.__dict__.get("_now_playing")
+        return bool(np_ is not None and np_.is_open() and np_.mode() == "lyrics")
 
     def _refine_words(self, lines):
         """Через доли секунды — тайминги слов по звуку трека (word_sync), в фоне."""

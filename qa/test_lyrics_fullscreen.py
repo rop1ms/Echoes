@@ -61,28 +61,46 @@ shell.toggle_lyrics()                                        # повторно 
 settle(1.0)
 check(not shell.now_playing_open() and not shell.btn_lyrics.isChecked(), "повторное нажатие закрывает экран")
 
-shell.toggle_lyrics()
-settle(1.0)
-np_.activate("tools")                                        # «…» — прежняя страница: поиск, ИИ, язык
-settle(1.0)
-check(not shell.now_playing_open() and shell._cur_page == "lyrics", "«…» открывает страницу поиска и синхронизации")
-shell.show_page("collection")
-settle(0.6)
-
-if lv is not None:                                           # текст без таймкодов — показывается целиком
-    lv._has_timings = False
-try:
-    win.lyrics_box.setPlainText("Куплет без таймкодов\nВторая строка\n\nПрипев")
-except Exception:                                            # noqa: BLE001
-    pass
-shell.toggle_lyrics()
-settle(1.0)
-check(np_._plain_text()[:2] == ["Куплет без таймкодов", "Вторая строка"], "текст без таймкодов берётся целиком")
+shell.show_page("lyrics")                                    # старая страница текста — теперь тоже этот экран
+settle(1.2)
+check(shell.lyrics_full_open() and shell._cur_page != "lyrics", "переход на «Текст» открывает экран на всё окно, а не старую страницу")
+box = np_._lyr_box
+check(box is not None and box.isVisible() and box.parentWidget() is np_, "кнопки и панель текста перенесены на экран")
+for name in ("l_appearance", "l_find", "l_panel"):
+    w = getattr(shell, name)
+    check(w.isVisible() and box.isAncestorOf(w), f"{name} виден на экране «Текст»")
+check(not shell.l_collapse.isVisible(), "вторая стрелка «свернуть» спрятана — есть стрелка экрана")
+check(shell.l_ai.parentWidget() is shell.l_top and box.isAncestorOf(shell.l_ai), "«Синхронизировать с ИИ» — в той же панели кнопок")
+gb = box.geometry()
+check(gb.left() > np_.width() * 0.3 and gb.height() > np_.height() * 0.6, f"панель текста — правая колонка во всю высоту ({gb})")
+check(shell.l_panel._backdrop is None, "панель текста прозрачная — под ней живой фон экрана")
+img = np_.grab().toImage()
+c = img.pixelColor(gb.center().x(), gb.center().y())
+check(max(c.red(), c.green(), c.blue()) > 24, f"на месте панели текста — фон, а не чёрный прямоугольник ({c.name()})")
 img = win.grab().toImage()
-check(not img.isNull(), "экран с текстом без таймкодов рисуется")
+fc = shell.l_find.mapTo(win, shell.l_find.rect().center())
+c2 = img.pixelColor(fc.x(), fc.y())
+check(min(c2.red(), c2.green(), c2.blue()) > 150, f"кнопка «Найти текст вручную» действительно нарисована ({c2.name()})")
+check(shell.l_panel.updatesEnabled() and box.updatesEnabled(), "панель и кнопки перерисовываются")
+check(not hasattr(np_, "_paint_plain") and "tools" not in np_.TIPS, "кнопки «…» и своего показа текста больше нет")
+np_.activate("lyrics")
+settle(1.0)
+check(np_.mode() == "cover" and not box.isVisible(), "в «Сейчас играет» панель текста уходит")
+np_.activate("lyrics")
+settle(1.0)
+check(box.isVisible(), "и возвращается в «Тексте»")
 np_.close_mode(instant=True)
 settle(0.3)
-check(np_._cap is None, "после закрытия заголовок окна снова системного цвета")
+check(np_._cap is None and not box.isVisible(), "после закрытия заголовок окна снова системный, панель спрятана")
+
+shell.toggle_lyrics()                                        # открыть «Текст» и закрыть…
+settle(1.0)
+np_.close_mode(instant=True)
+settle(0.2)
+shell.open_now_playing()                                     # …клик по обложке — всегда «Сейчас играет»
+settle(1.0)
+check(np_.mode() == "cover", "клик по обложке открывает «Сейчас играет», а не последний режим")
+np_.close_mode(instant=True)
 
 print("ALL OK" if not fails else f"{len(fails)} FAILED", flush=True)
 os._exit(1 if fails else 0)

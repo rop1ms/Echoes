@@ -7,10 +7,12 @@
 синхронного текста, «Далее» — два-три следующих трека, и управление с полоской времени.
 Открывается кликом по обложке в нижнем плеере и по Ctrl+Shift+N, закрывается по Esc и стрелкой.
 
-Режим «Текст» (кнопка текста в нижнем плеере или вверху экрана) — тот же экран: тот же фон и полёт обложки,
-только правая колонка целиком отдана крупному синхронному тексту, а обложка с управлением становится уже.
-Между режимами всё перетекает (раскладка, размер строк, «Далее» уходит). Заголовок окна Windows в это время
-красится в цвет фона обложки (DwmSetWindowAttribute, Windows 11), после закрытия — снова системный.
+Режим «Текст» (кнопка текста в нижнем плеере или вверху экрана) — это прежняя страница текста, перенесённая
+сюда: её панель текста (LyricsScrollPanel: перевод, заливка строк, оформление) и её кнопки («Синхронизировать
+с ИИ», «Язык и оформление», «Найти текст вручную», «Теги трека») встают в правую колонку, а слева — обложка
+и управление этого экрана. Отдельной страницы текста больше нет. Между режимами всё перетекает (раскладка,
+«Далее» уходит, панель проявляется). Заголовок окна Windows в это время красится в цвет фона обложки
+(DwmSetWindowAttribute, Windows 11), после закрытия — снова системный.
 
 Как это сделано, чтобы ничего не тормозило:
   * обложка, тень, свечение и оба слоя фона готовятся в фоновом потоке (только QImage) — поток окна
@@ -34,8 +36,8 @@ from pathlib import Path
 
 from frameclock import FrameTimer
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap, QRegion,
-                         QRadialGradient)
+from PyQt6.QtGui import (QColor, QFont, QFontMetrics, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+                         QRegion, QRadialGradient)
 from PyQt6.QtWidgets import QToolTip, QWidget
 
 DRIFT = 56                      # на сколько пикселей второй слой фона больше окна с каждой стороны
@@ -232,7 +234,6 @@ class NowPlaying(QWidget):
 
     TIPS = {
         "back": "Свернуть (Esc)", "lyrics": "Текст песни", "queue": "Очередь",
-        "tools": "Найти, синхронизировать или перевести текст",
         "like": "Мне нравится", "shuffle": "Перемешать", "prev": "Предыдущий",
         "play": "Играть / пауза", "next": "Следующий", "repeat": "Повтор",
     }
@@ -293,7 +294,9 @@ class NowPlaying(QWidget):
         self._gm: dict = {}            # готовые раскладки обоих режимов для текущего размера
         self._cap = None               # цвет, в который сейчас покрашен заголовок окна (None — системный)
         self._cap_t = 0.0
-        self._plain_off = 0.0          # прокрутка текста без таймкодов
+        self._lyr_box = None           # кнопки и панель прежней страницы текста — в режиме «Текст»
+        self._lyr_snap = None          # их снимок, пока они проявляются или гаснут
+        self._lyr_a = 0.0
         self._under_key = None
         self._bus = _Bus(self)
         self._bus.done.connect(self._on_assets)
@@ -321,13 +324,112 @@ class NowPlaying(QWidget):
         self._lm_to = 1.0 if mode == "lyrics" else 0.0
         if self._motion() <= 0:
             self._lm = self._lm_to
-        self._plain_off = 0.0
         self._geom_sig = None
+        if mode == "lyrics":
+            self._refresh_lyrics()
+            self._lyr_snap = None                              # снимок — уже с текстом этого трека
         self._sync_lyrics_button()
         self._timer.setInterval(8)
         if not self._timer.isActive() and self.isVisible():
             self._timer.start()
         self.update()
+
+    def _refresh_lyrics(self):
+        """Панель текста — под играющий трек (раньше это делало открытие страницы текста)."""
+        sh = self.shell
+        try:
+            sh._lyr_src = None
+            sh._lyrics_tick(None, None)
+        except Exception as e:                                 # noqa: BLE001
+            print("[now playing] lyrics:", e)
+
+    def _lyrics_box(self):
+        """Кнопки и панель прежней страницы текста — переносятся сюда один раз, при первом режиме «Текст»."""
+        box = self._lyr_box
+        if box is not None:
+            return box
+        sh = self.shell
+        panel, top = getattr(sh, "l_panel", None), getattr(sh, "l_top", None)
+        if panel is None or top is None:
+            return None
+        from PyQt6.QtWidgets import QVBoxLayout
+        box = self._lyr_box = QWidget(self)
+        box.setObjectName("NpLyrics")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(12)
+        v.addWidget(top)
+        v.addWidget(panel, 1)
+        col = getattr(sh, "l_collapse", None)
+        if col is not None:                                    # свернуть — стрелкой экрана слева вверху
+            col.hide()
+        # своя подложка панели (кусок фона страницы) здесь не нужна: панель прозрачная, под ней живой фон экрана
+        # (с подложкой из этого фона кусок под панелью выходил чёрным)
+        panel.set_backdrop(None)
+        top.show()
+        panel.show()
+        box.hide()
+        return box
+
+    def _content_op(self) -> float:
+        """Насколько проявлено содержимое экрана (как в paintEvent: при полёте обложки — позже фона)."""
+        if self._op < 1.0 and self._from is not None:
+            return _ease(max(0.0, (self._op - 0.42) / 0.58))
+        return _ease(self._op)
+
+    def _place_lyrics(self, g):
+        """Кнопки и панель текста стоят на месте правой колонки режима «Текст». Пока они проявляются или гаснут,
+        экран рисует их снимок с прозрачностью (paintEvent); живые виджеты — только когда экран открыт целиком.
+        (QGraphicsOpacityEffect и показ до открытия экрана оставляли контейнер невидимым.)"""
+        lm = g.get("lm", 0.0)
+        box = self._lyrics_box() if lm > 0.0 else self._lyr_box
+        if box is None:
+            return
+        fin = self._geom_mode(True)["lyr"]
+        self._lyr_a = self._content_op() * lm if self.isVisible() else 0.0
+        if fin is None:
+            self._lyr_a = 0.0
+            if box.isVisible():
+                box.hide()
+            return
+        r = fin.toRect()
+        if box.geometry() != r:
+            box.setGeometry(r)
+            self._lyr_snap = None
+        self._ensure_updates(box)
+        if self._lyr_a >= 0.995 and self.isVisible():
+            self._lyr_snap = None
+            if not box.isVisible():
+                box.show()
+                box.raise_()
+            return
+        if box.isVisible():
+            self._lyr_snap = self._snap_box(box)               # гаснет — с последнего живого кадра
+            box.hide()
+        if self._lyr_a > 0.01 and self._lyr_snap is None:
+            self._lyr_snap = self._snap_box(box)
+
+    @staticmethod
+    def _ensure_updates(box):
+        """Окно на время анимаций выключает перерисовку (setUpdatesEnabled(False)); виджеты, переехавшие в это
+        время со страницы текста, оставались с выключенной перерисовкой — Qt их не рисовал вовсе."""
+        if not box.updatesEnabled():
+            box.setUpdatesEnabled(True)
+        for w in box.findChildren(QWidget):
+            if not w.updatesEnabled():
+                w.setUpdatesEnabled(True)
+
+    @staticmethod
+    def _snap_box(box):
+        lay = box.layout()
+        if lay is not None:
+            lay.activate()
+        dpr = box.devicePixelRatioF()
+        pm = QPixmap(max(1, int(box.width() * dpr)), max(1, int(box.height() * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        box.render(pm, QPoint(0, 0), QRegion(), QWidget.RenderFlag.DrawChildren)
+        return pm
 
     def _sync_lyrics_button(self):
         try:
@@ -341,8 +443,10 @@ class NowPlaying(QWidget):
         if mode is not None:                                   # открыть сразу в нужном режиме (без перетекания)
             self._mode = "lyrics" if mode == "lyrics" else "cover"
             self._lm = self._lm_to = 1.0 if self._mode == "lyrics" else 0.0
-            self._plain_off = 0.0
             self._geom_sig = None
+            self._lyr_snap = None
+            if self._mode == "lyrics":
+                self._refresh_lyrics()
         p = self.parentWidget()
         if p is not None:
             self.setGeometry(p.rect())
@@ -443,6 +547,8 @@ class NowPlaying(QWidget):
     def _finish_close(self):
         self._timer.stop()
         self._caption(False)
+        if self._lyr_box is not None:
+            self._lyr_box.hide()
         self._under = None
         self.hide()
         self.prog.hide()
@@ -784,11 +890,14 @@ class NowPlaying(QWidget):
                 return
             if self._bgc is None or self._bgc.width() < 8:
                 return
-            img = self._bgc.copy(0, 0, self._bgc.width(), 3).toImage()
+            # среднее по верхней полосе фона (а не по самой кромке — она у размытых обложек темнее, и заголовок
+            # почти не отличался от обычного); в paintEvent верх фона потом плавно уходит ровно в этот цвет
+            img = self._bgc.copy(0, 0, self._bgc.width(), 72).toImage()
             r = g = b = n = 0
-            for x in range(0, img.width(), max(1, img.width() // 48)):
-                c = img.pixelColor(x, 1)
-                r, g, b, n = r + c.red(), g + c.green(), b + c.blue(), n + 1
+            for y in (2, 18, 36, 54, 70):
+                for x in range(0, img.width(), max(1, img.width() // 32)):
+                    c = img.pixelColor(x, min(y, img.height() - 1))
+                    r, g, b, n = r + c.red(), g + c.green(), b + c.blue(), n + 1
             col = (r // n, g // n, b // n)
             if self._cap is not None and max(abs(col[i] - self._cap[i]) for i in range(3)) < 3:
                 return
@@ -914,7 +1023,6 @@ class NowPlaying(QWidget):
         g["back"] = QRectF(pad - 8, (top - 44) / 2 + 2, 44, 44)
         g["queue"] = QRectF(W - pad - 36, (top - 44) / 2 + 2, 44, 44)
         g["lyrics"] = QRectF(g["queue"].left() - 50, g["queue"].top(), 44, 44)
-        g["tools"] = QRectF(g["lyrics"].left() - 50, g["queue"].top(), 44, 44)
         g["head"] = QRectF(g["back"].right() + 12, g["back"].top(), max(40.0, g["lyrics"].left() - g["back"].right() - 24), 44)
         g["next_rows"] = []
         g["lyr"] = None
@@ -952,14 +1060,13 @@ class NowPlaying(QWidget):
         r = g["prog"]
         if self.prog.geometry() != r:
             self.prog.setGeometry(r)
+        self._place_lyrics(g)
 
     def _hit(self, pos):
         g = self._geom()
         for name in ("back", "lyrics", "queue", "like", "shuffle", "prev", "play", "next", "repeat"):
             if g[name].contains(pos):
                 return name
-        if g.get("lm", 0.0) > 0.5 and g["tools"].contains(pos):
-            return "tools"
         for k, r in enumerate(g["next_rows"]):
             if r.contains(pos):
                 return ("row", k)
@@ -1008,9 +1115,6 @@ class NowPlaying(QWidget):
 
     def wheelEvent(self, e):
         e.accept()                                             # страница под экраном не прокручивается
-        if self._mode == "lyrics" and not self._ly_ms:         # текст без таймкодов листается колесом
-            self._plain_off = max(0.0, self._plain_off - e.angleDelta().y() * 0.6)
-            self.update()
 
     def contextMenuEvent(self, e):
         e.accept()
@@ -1040,10 +1144,6 @@ class NowPlaying(QWidget):
             self.close_mode()
         elif what == "lyrics":                                 # «Сейчас играет» ↔ «Текст» — на этом же экране
             self.set_mode("cover" if self._mode == "lyrics" else "lyrics")
-        elif what == "tools":                                  # поиск, синхронизация с ИИ, язык — прежняя страница
-            self.close_mode(instant=True)
-            if sh._cur_page != "lyrics":
-                sh.show_lyrics_tools()
         elif what == "queue":
             self.close_mode(instant=True)
             if sh._cur_page != "queue":
@@ -1105,23 +1205,19 @@ class NowPlaying(QWidget):
             self._h_cache[key] = h
         return h
 
-    def _paint_lyrics(self, p, area: QRectF, op: float, compact: bool, big: float = 0.0):
+    def _paint_lyrics(self, p, area: QRectF, op: float, compact: bool):
         from yamusic_theme import ya_font
         n = len(self._ly_tx)
         self._ly_hits = []
         if not n:
-            if big > 0.0:
-                self._paint_plain(p, area, op * big, compact)
             return
-        px0 = 21 if compact else (27 if area.height() < 520 else 30)
-        px1 = 26 if compact else (34 if area.height() < 600 else 40)
-        px = int(round(px0 + (px1 - px0) * big))
+        px = 21 if compact else (27 if area.height() < 520 else 30)
         font = ya_font(px, QFont.Weight.Bold)
-        gap = px * (0.62 + 0.14 * big)
+        gap = px * 0.62
         w = area.width() - 16
         i = self._li
         i_eff = max(0, i)
-        lo, hi = max(0, i_eff - 3 - int(3 * big)), min(n - 1, i_eff + 6 + int(6 * big))
+        lo, hi = max(0, i_eff - 3), min(n - 1, i_eff + 6)
         # центры строк относительно центра текущей
         hs = {j: self._line_h(self._ly_tx[j], w, font) for j in range(lo, hi + 1)}
         cy = {i_eff: 0.0}
@@ -1133,7 +1229,7 @@ class NowPlaying(QWidget):
         o = self._li_from
         o_eff = max(0, o)
         shift = cy.get(o_eff, 0.0) * (1.0 - e) if e < 1.0 else 0.0
-        anchor = area.top() + area.height() * (0.36 + 0.04 * big)
+        anchor = area.top() + area.height() * 0.36
 
         def alpha(j, cur):
             if j == cur:
@@ -1157,59 +1253,6 @@ class NowPlaying(QWidget):
             p.setOpacity(op * max(a, 0.7 if hot else 0.0) * edge)
             p.drawText(r, flags, self._ly_tx[j])
             self._ly_hits.append((r, self._ly_ms[j]))
-        p.restore()
-
-    def _plain_text(self) -> list:
-        try:
-            txt = self.win.lyrics_box.toPlainText()
-        except Exception:                                      # noqa: BLE001
-            txt = ""
-        import re
-        out = []
-        for ln in str(txt or "").splitlines():
-            s = re.sub(r"\[[0-9:.]+\]", "", ln).strip()        # таймкоды, если они есть, но не разобрались
-            out.append(s)
-        while out and not out[-1]:
-            out.pop()
-        return out
-
-    def _paint_plain(self, p, area: QRectF, op: float, compact: bool):
-        """«Текст» без таймкодов: весь текст крупно, листается колесом; текста нет — подсказка."""
-        from yamusic_theme import ya_font
-        if op <= 0.0:
-            return
-        lines = self._plain_text()
-        p.save()
-        p.setClipRect(area)
-        p.setPen(QColor(255, 255, 255))
-        if not lines:
-            p.setFont(ya_font(26 if compact else 32, QFont.Weight.Bold))
-            p.setOpacity(op * 0.9)
-            r = QRectF(area.left() + 8, area.top() + area.height() * 0.30, area.width() - 16, 60)
-            p.drawText(r, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), "Текста пока нет")
-            p.setFont(ya_font(15, QFont.Weight.DemiBold))
-            p.setOpacity(op * 0.6)
-            p.drawText(QRectF(r.left(), r.bottom() + 6, r.width(), 50),
-                       int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
-                       "Найти, синхронизировать с ИИ или перевести — кнопка с тремя точками вверху справа")
-            p.restore()
-            return
-        px = 22 if compact else 28
-        font = ya_font(px, QFont.Weight.Bold)
-        p.setFont(font)
-        w = area.width() - 16
-        y = area.top() + 24 - self._plain_off
-        flags = int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap)
-        total = 0.0
-        for s in lines:
-            h = self._line_h(s, w, font) if s else px * 0.7
-            if s and y + h > area.top() and y < area.bottom():
-                edge = min(1.0, max(0.0, (area.bottom() - y) / 70.0), max(0.0, (y + h - area.top()) / 50.0))
-                p.setOpacity(op * 0.86 * edge)
-                p.drawText(QRectF(area.left() + 8, y, w, h), flags, s)
-            y += h + px * 0.42
-            total += h + px * 0.42
-        self._plain_off = min(self._plain_off, max(0.0, total - area.height() * 0.6))
         p.restore()
 
     def _paint_nexts(self, p, g, op: float):
@@ -1358,6 +1401,13 @@ class NowPlaying(QWidget):
                 p.drawPixmap(0, 0, self._bgc)
         else:
             p.fillRect(self.rect(), QColor(10, 10, 13))
+        cap = self._cap
+        if cap is not None:                                    # шов с заголовком окна: верх фона уходит ровно в его цвет,
+            band = 72                                          # и заголовок выглядит продолжением размытой обложки
+            grad = QLinearGradient(0, 0, 0, band)
+            grad.setColorAt(0.0, QColor(cap[0], cap[1], cap[2], 255))
+            grad.setColorAt(1.0, QColor(cap[0], cap[1], cap[2], 0))
+            p.fillRect(QRectF(0, 0, W, band), grad)
         cur, prev = self._cur, self._prev
         xf = _ease(self._xf) if prev is not None else 1.0
         acc = ya_decor.accent()
@@ -1409,8 +1459,6 @@ class NowPlaying(QWidget):
             on = name == "lyrics" and lm > 0.5
             self._named_icon(p, name, icon, g[name], size, op, 1.0 if on else 0.78,
                              ya_decor.accent().name() if on else "#ffffff")
-        if lm > 0.0:
-            self._named_icon(p, "tools", "dots", g["tools"], 20, op * lm, 0.78)
         f = ya_font(11, QFont.Weight.Bold)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.6)
         p.setFont(f)
@@ -1506,12 +1554,17 @@ class NowPlaying(QWidget):
             p.drawPath(tri)
 
         # справа: текст и «Далее»
-        if g["lyr"] is not None:
-            self._paint_lyrics(p, g["lyr"], op, g["compact"], lm)
+        if g["lyr"] is not None and lm < 1.0:                  # свои строки — только в «Сейчас играет»;
+            self._paint_lyrics(p, g["lyr"], op * (1.0 - lm), g["compact"])   # в «Тексте» — панель текста
         else:
             self._ly_hits = []
         if lm < 1.0:
             self._paint_nexts(p, g, op * (1.0 - lm))
+        box, snap = self._lyr_box, self._lyr_snap              # кнопки и панель текста проявляются / гаснут
+        if box is not None and snap is not None and not box.isVisible() and self._lyr_a > 0.01:
+            p.resetTransform()
+            p.setOpacity(self._lyr_a)
+            p.drawPixmap(box.pos(), snap)
         p.end()
 
     def _named_icon(self, p, name, icon, r: QRectF, size, op, alpha=1.0, color="#ffffff", zoom=1.0):
