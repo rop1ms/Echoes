@@ -1431,6 +1431,7 @@ class NetNode:
             d = m.get("del") or {}
             if verify_obj(d, "author") and d.get("author") == o:
                 self.store.delete_post(str(d.get("id")))
+                self._devfeed_gone(str(d.get("id")))
                 self.emit("feed")
         elif t == "vote":
             v = m.get("vote") or {}
@@ -1534,6 +1535,10 @@ class NetNode:
         elif t in ("devsync", "devpair"):                     # синхронизация своих ПК (net_devsync)
             if self.is_friend(o):
                 self.emit("devsync", {"from": o, "m": m})
+        elif t in ("devfeed_req", "devfeed", "devfeed_upd", "devfeed_del", "dev_act", "dev_act_ok"):
+            if self.is_friend(o):                              # лента для своего устройства (net_devfeed)
+                import net_devfeed
+                await net_devfeed.on_message(self, p, o, m)
         elif t in ("q_add", "q_res"):                         # «подкинуть трек в очередь» другу
             if self.is_friend(o):
                 self.emit("q_add" if t == "q_add" else "q_res",
@@ -1598,6 +1603,17 @@ class NetNode:
         return (c and c["name"]) or self.__dict__.get("_names", {}).get(onion) or onion[:8]
 
     # ── лента ── #
+
+    def _devfeed_touch(self, pid):
+        """Пост появился или изменился — передать своим устройствам, если они берут ленту (net_devfeed)."""
+        if "_devfeed" in self.__dict__:
+            import net_devfeed
+            net_devfeed.touch(self, pid)
+
+    def _devfeed_gone(self, pid):
+        if "_devfeed" in self.__dict__:
+            import net_devfeed
+            net_devfeed.gone(self, pid)
 
     def _thread_item(self, post: dict) -> dict:
         return {"post": post, "comments": self.store.comments(post["id"]), "votes": self.store.votes(post["id"]),
@@ -1667,17 +1683,20 @@ class NetNode:
             rts = [r for r in it.get("reacts") or [] if isinstance(r, dict) and r.get("post") == post["id"]
                    and verify_obj(r, "who") and self._react_ok(r)]
             self.store.replace_thread(post["id"], coms, vts, rts)
+            self._devfeed_touch(post["id"])
             oldest = post["ts"] if oldest is None else min(oldest, post["ts"])
         if isinstance(ids, list):                              # автор удалил пост — убрать и у нас
             keep = set(map(str, ids))
             for p in self.store.posts(author, 500):
                 if p["id"] not in keep and (oldest is None or p["ts"] >= oldest):
                     self.store.delete_post(p["id"])
+                    self._devfeed_gone(p["id"])
 
     async def _push_thread(self, pid):
         post = self.store.post(pid)
         if post:
             await self._broadcast_friends({"t": "post_upd", "item": self._thread_item(post)})
+            self._devfeed_touch(pid)
             self.emit("feed")
 
     # ── действия интерфейса (вызывать через call) ── #
@@ -1843,6 +1862,7 @@ class NetNode:
             return
         self.store.put_post(post)
         self.emit("feed")
+        self._devfeed_touch(post["id"])
         await self._broadcast_friends({"t": "post_new", "item": self._thread_item(post)})
 
     async def react(self, pid, kind, val):
@@ -1856,6 +1876,7 @@ class NetNode:
             return
         r = self.me.sign_obj(r)
         self.store.put_react(r)
+        self._devfeed_touch(pid)
         self.emit("feed")
         if post["author"] == self.me.onion:
             await self._push_thread(pid)
@@ -4700,6 +4721,7 @@ class NetNode:
         if not post or post["author"] != self.me.onion:
             return
         self.store.delete_post(pid)
+        self._devfeed_gone(pid)
         self.emit("feed")
         d = self.me.sign_obj({"k": "del", "id": pid, "author": self.me.onion, "ts": time.time()})
         await self._broadcast_friends({"t": "post_del", "del": d})
@@ -4710,6 +4732,7 @@ class NetNode:
             return
         v = self.me.sign_obj({"k": "vote", "post": pid, "voter": self.me.onion, "val": int(val), "ts": time.time()})
         self.store.put_vote(v)
+        self._devfeed_touch(pid)
         self.emit("feed")
         if post["author"] == self.me.onion:
             await self._push_thread(pid)
@@ -4734,6 +4757,7 @@ class NetNode:
             obj["at"] = clean_sec(at)
         c = self.me.sign_obj(obj)
         self.store.put_comment(c)
+        self._devfeed_touch(pid)
         self.emit("feed")
         if post["author"] == self.me.onion:
             await self._push_thread(pid)

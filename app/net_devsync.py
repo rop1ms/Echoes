@@ -352,6 +352,18 @@ def settings_card(net):
             st = "ждёт подтверждения"
         h = QHBoxLayout()
         h.addWidget(lbl(f"\U000f1001  {c.get('name') or o[:8]}  ·  {st}", "NetName"), 1)
+        import net_devfeed
+        fon = net_devfeed.share_on(nd, o)
+        fb = ghost_btn("Лента и друзья: вкл" if fon else "Лента и друзья: выкл")
+        fb.setToolTip("Передавать этому устройству (например, телефону Echoes Lite) ваших друзей и ленту. "
+                      "Реакции и посты с него уходят от имени этого ПК. Работает, пока этот ПК в сети.")
+
+        def toggle_feed(_=False, o=o, on=fon):
+            nd.call(net_devfeed.set_share, nd, o, not on)
+            net.toast("Лента для устройства " + ("выключена" if on else "включена"))
+            QTimer.singleShot(150, net._fill_net)
+        fb.clicked.connect(toggle_feed)
+        h.addWidget(fb)
         un = ghost_btn("Отвязать")
 
         def unlink(_=False, o=o):
