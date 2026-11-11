@@ -1,4 +1,6 @@
 # main.py
+import startup_trace as _strace            # ECHOES_STARTUP_TRACE — замер времени запуска (qa/probe_startup_time.py)
+_strace.mark("python")
 import boot_guard                          # откат версии, которая дважды не запустилась
 if __name__ == "__main__":
     boot_guard.enter()
@@ -267,6 +269,8 @@ class WindowsMediaKeyFilter(QAbstractNativeEventFilter):
         self.window = window
         self.registered = []
 
+    _MSG = None                                        # структура MSG — создаётся один раз (nativeEventFilter)
+
     def register(self):
         if sys.platform != "win32":
             return
@@ -293,13 +297,19 @@ class WindowsMediaKeyFilter(QAbstractNativeEventFilter):
         if sys.platform != "win32" or eventType not in ("windows_generic_MSG", "windows_dispatcher_MSG"):
             return False, 0
         try:
-            import ctypes
-            class MSG(ctypes.Structure):
-                _fields_ = [
-                    ("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint),
-                    ("wParam", ctypes.c_size_t), ("lParam", ctypes.c_ssize_t),
-                    ("time", ctypes.c_uint), ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long),
-                ]
+            MSG = WindowsMediaKeyFilter._MSG
+            if MSG is None:
+                # один раз: раньше класс создавался на КАЖДОЕ сообщение Windows (движение мыши, отрисовка,
+                # таймеры — тысячи в секунду) и каждый раз оставлял циклический мусор сборщику
+                import ctypes
+
+                class MSG(ctypes.Structure):
+                    _fields_ = [
+                        ("hwnd", ctypes.c_void_p), ("message", ctypes.c_uint),
+                        ("wParam", ctypes.c_size_t), ("lParam", ctypes.c_ssize_t),
+                        ("time", ctypes.c_uint), ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long),
+                    ]
+                WindowsMediaKeyFilter._MSG = MSG
             msg = MSG.from_address(int(message))
             if msg.message != 0x0312:  # WM_HOTKEY
                 return False, 0
@@ -1212,6 +1222,7 @@ class MainWindow(QMainWindow):
         #    time-stretch. Позиция в треке сохраняется при включении/выключении.
         self._ui_bridge = _UiBridge(self)
         self._ui_bridge.call.connect(lambda fn: fn())
+        QTimer.singleShot(1200, self._lyrics_cache_preload)
         # стриминг: онлайн-треки («stream:…») играют сразу, ссылки на поток готовятся заранее
         import stream_core
         self.streams = stream_core.resolver(lambda fn: self._ui_bridge.call.emit(fn))
@@ -3716,6 +3727,14 @@ class MainWindow(QMainWindow):
             self._was_maximized = self.isMaximized()
             ui_anim.animate_state(self, "full")
 
+    def _toggle_now_playing(self):
+        """Ctrl+Shift+N — экран «Сейчас играет» (оболочка Echoes Music); в других темах — режим обложки."""
+        ya = getattr(self, "_ya", None)
+        if ya is not None and ya.isVisible() and hasattr(ya, "toggle_now_playing"):
+            ya.toggle_now_playing()
+        else:
+            self._toggle_cover_mode()
+
     def _toggle_cover_mode(self):
         from cover_mode import CoverMode
         cm = getattr(self, "_cover_mode", None)
@@ -4634,6 +4653,11 @@ class MainWindow(QMainWindow):
                     # Трек добавлен после генерации очереди — вставляем в текущую позицию
                     self._shuffle_queue.insert(self._shuffle_pos + 1, idx)
                     self._shuffle_pos += 1
+        try:                                         # обложку декодируем ОДИН раз — дальше её берут из памяти
+            import img_load                          # все, кто рисует играющий трек (img_load.warm)
+            img_load.warm(t.get("cover", ""))
+        except Exception:                            # noqa: BLE001
+            pass
         self._update_track_info(t)
         self._set_playing_ui(True)
         self._record_play_history(t.get("path", ""))
@@ -5253,23 +5277,43 @@ class MainWindow(QMainWindow):
                 idx = self._shuffle_queue[next_pos]
                 self._next_shuffle_idx = idx
                 self.engine.preload(tracks[idx].get("path", ""))
+                self._warm_covers([tracks[idx].get("cover", "")])
             else:
                 self._next_shuffle_idx = None
             return
 
         self._next_shuffle_idx = None
+        covers = []
 
         nxt = self._step_index(self.queue_context, self.current_index, 1, len(tracks))
         if 0 <= nxt < len(tracks):
             p = tracks[nxt].get("path", "")
             if p and Path(p).exists():
                 self.engine.preload(p)
+            covers.append(tracks[nxt].get("cover", ""))
 
         prv = self._step_index(self.queue_context, self.current_index, -1, len(tracks))
         if 0 <= prv < len(tracks):
             p = tracks[prv].get("path", "")
             if p and Path(p).exists():
                 self.engine.preload(p)
+            covers.insert(0, tracks[prv].get("cover", ""))   # следующий — последним: он нужнее предыдущего
+        self._warm_covers(covers)
+
+    def _warm_covers(self, covers):
+        """Обложки соседних треков — в память заранее, в фоне: переключение не ждёт декодирования."""
+        covers = [str(c) for c in covers if c]
+        if not covers:
+            return
+
+        def work():
+            try:
+                import img_load
+                for c in covers:
+                    img_load.warm(c)
+            except Exception as e:                       # noqa: BLE001
+                print("[cover warm]", e)
+        threading.Thread(target=work, daemon=True, name="cover-warm").start()
 
     def _lyrics_seek(self, ms: int):
         """Клик по строке текста — перемотка к ней (с учётом пресета)."""
@@ -7134,7 +7178,7 @@ class MainWindow(QMainWindow):
         h = hist.setdefault(path, {"count": 0, "last": "1970-01-01"})
         h["count"] = int(h.get("count", 0)) + 1
         h["last"] = datetime.date.today().isoformat()
-        save_json(SETTINGS_FILE, self.settings)
+        self._schedule_settings_save()               # не в момент смены трека: сериализация — после кадра
 
     def _play_track_of_the_day(self):
         history = self.settings.get("play_history", {})
@@ -7185,6 +7229,26 @@ class MainWindow(QMainWindow):
             if not isinstance(self._lyr_cache, dict):
                 self._lyr_cache = {}
         return self._lyr_cache
+
+    def _lyrics_cache_preload(self):
+        """Кэш текстов (мегабайты JSON) — прочитать в фоне сразу после запуска: первое включение трека
+        больше не ждёт диск и разбор файла в потоке интерфейса."""
+        if getattr(self, "_lyr_cache", None) is not None:
+            return
+
+        def work():
+            data = load_json(LYRICS_CACHE_FILE, {})
+            if not isinstance(data, dict):
+                data = {}
+
+            def done():
+                if getattr(self, "_lyr_cache", None) is None:    # не успели прочитать сами — берём готовое
+                    self._lyr_cache = data
+            try:
+                self._ui_bridge.call.emit(done)
+            except RuntimeError:
+                pass
+        threading.Thread(target=work, daemon=True, name="lyrics-cache").start()
 
     def _lyrics_cache_put(self, path, text, src, synced, hit=None):
         c = self._lyrics_cache()
@@ -8256,6 +8320,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+L"),self,activated=lambda: self._load_lyrics(force=True))
         QShortcut(QKeySequence("Ctrl+Shift+L"),self,activated=self._manual_lyrics_search)
         QShortcut(QKeySequence("Ctrl+Shift+K"),self,activated=self._toggle_clip_mode)   # Ctrl+K — палитра команд
+        QShortcut(QKeySequence("Ctrl+Shift+N"),self,activated=self._toggle_now_playing)   # «Сейчас играет» во всё окно
         QShortcut(QKeySequence(Qt.Key.Key_F11),self,activated=self._toggle_fullscreen)
         QShortcut(QKeySequence("Ctrl+M"),self,activated=self._open_hub)
         QShortcut(QKeySequence("Ctrl+Shift+T"),self,activated=lambda: self._open_theme_studio())
@@ -8709,6 +8774,7 @@ def _app_icon():
 
 
 if __name__=="__main__":
+    _strace.mark("imports")
     _CRASH_LOG = _install_crash_logging()
     print(f"[neon] лог ошибок: {_CRASH_LOG}")
     if sys.platform.startswith("win"):
@@ -8744,6 +8810,7 @@ if __name__=="__main__":
     except Exception as _e:                            # noqa: BLE001
         print("[gpu] format:", _e)
     app=QApplication(sys.argv)
+    _strace.mark("qapp")
     try:                                               # без случайных «окошек» у кнопок (noflash)
         noflash.install_qt_guard(app)
     except Exception as _e:                            # noqa: BLE001
@@ -8790,7 +8857,9 @@ if __name__=="__main__":
             _native_intro = intro_anim.start_native()
     except Exception as _e:                            # noqa: BLE001
         print("[intro]", _e)
-    win=MainWindow()
+    _strace.mark("before_window")
+    win=_strace.build(MainWindow)
+    _strace.mark("window_built")
     try:                  # заставка: солнце с вылетающими лучами и надпись ECHOES (Настройки → Оформление)
         import intro_anim
         if intro_anim.enabled(win.settings) and not _native_intro:
@@ -8803,6 +8872,8 @@ if __name__=="__main__":
     except Exception as _e:                            # noqa: BLE001
         print("[gpu] anchor:", _e)
     win.show()
+    _strace.mark("shown")
+    _strace.after_show(win)
     try:                  # запуск удался — откат больше не нужен; после отката — сказать почему
         import boot_guard
         QTimer.singleShot(15000, boot_guard.mark_ok)

@@ -45,7 +45,12 @@ _ALIAS: dict = {}                     # ключ → ключ «главного
 
 
 def key(value):
-    s = unicodedata.normalize('NFKC', str(value or '')).casefold()
+    return _key(value if type(value) is str else str(value or ''))
+
+
+@lru_cache(maxsize=32768)
+def _key(value):
+    s = unicodedata.normalize('NFKC', value).casefold()
     s = _TOPIC.sub('', s)
     s = _VEVO.sub('', s)
     s = ''.join(c for c in s if unicodedata.category(c) != 'Cf')

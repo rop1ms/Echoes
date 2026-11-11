@@ -463,6 +463,17 @@ def _draw_icon(p: QPainter, name: str, col: QColor):
         p.drawLine(QPointF(12, 5), QPointF(12, 19)); p.drawLine(QPointF(5, 12), QPointF(19, 12))
     elif name == "check":
         p.drawLine(QPointF(5, 12.5), QPointF(10, 17.5)); p.drawLine(QPointF(10, 17.5), QPointF(19.5, 7))
+    elif name in ("thumb_up", "thumb_down", "thumb_up_fill", "thumb_down_fill"):   # «больше / меньше такого»
+        if name.startswith("thumb_down"):
+            p.translate(0, 24); p.scale(1, -1)
+        path = QPainterPath(); path.moveTo(8, 10.5); path.lineTo(11.3, 3.6)
+        path.cubicTo(13.2, 3.4, 14.4, 4.8, 13.9, 6.9); path.lineTo(13.2, 9.6); path.lineTo(18.6, 9.6)
+        path.cubicTo(20.2, 9.6, 21.2, 11, 20.8, 12.5); path.lineTo(19.2, 18.6)
+        path.cubicTo(18.9, 19.7, 18, 20.4, 16.9, 20.4); path.lineTo(8, 20.4); path.closeSubpath()
+        if name.endswith("_fill"):
+            p.setBrush(col)
+        p.drawPath(path)
+        p.drawRoundedRect(QRectF(3.2, 10.5, 3.4, 9.9), 1.2, 1.2)
     elif name == "bell":
         path = QPainterPath(); path.moveTo(6, 16.5); path.cubicTo(7, 15, 7, 13, 7, 10.5)
         path.cubicTo(7, 7.5, 9.2, 5.2, 12, 5.2); path.cubicTo(14.8, 5.2, 17, 7.5, 17, 10.5)
@@ -995,12 +1006,86 @@ class TrackDelegate(QStyledItemDelegate):
         """Кнопка «30 с» (послушать до скачивания) — только у треков, которых нет в коллекции."""
         return QRect(r.right() - 270, r.top() + 14, 86, 28)
 
+    ALBUM_MIN_W = 720                                          # уже — колонка альбома прячется
+
+    @staticmethod
+    def album_of(row) -> str:
+        """Альбом для колонки в строке ('' — не показывать: неизвестен, сингл с тем же названием, что у трека,
+        строка самого альбома или не скачанный трек)."""
+        if not row or row.get("remote") or row.get("ctx") == ALBUM_PL:
+            return ""
+        alb = " ".join(str(row["t"].get("album") or "").split())
+        if alb.lower() in _NO_ALBUM or alb.lower() == " ".join(str(row["t"].get("title") or "").split()).lower():
+            return ""
+        return alb
+
+    @staticmethod
+    def album_zone(r: QRect):
+        """Колонка альбома в пустой середине строки; None — строка узкая, колонки нет."""
+        if r.width() < TrackDelegate.ALBUM_MIN_W:
+            return None
+        x = r.left() + int(r.width() * 0.52)
+        return QRect(x, r.top() + 14, max(0, r.right() - 156 - 16 - x), 28)
+
+    @staticmethod
+    def album_hit(r: QRect, row):
+        """Прямоугольник самой надписи альбома (по нему клик открывает альбом) или None."""
+        z = TrackDelegate.album_zone(r)
+        alb = TrackDelegate.album_of(row)
+        if z is None or not alb or z.width() < 40:
+            return None
+        w = min(z.width(), QFontMetrics(ya_font(12)).horizontalAdvance(alb) + 4)
+        return QRect(z.left(), z.top(), w, z.height())
+
+    EQ_BARS = 4
+
+    @staticmethod
+    def eq_levels(playing: bool, now=None) -> list:
+        """Высоты столбиков эквалайзера 0..1 на обложке играющего трека. На паузе и без анимаций — застывшие."""
+        if not playing:
+            return [0.34, 0.62, 0.46, 0.26]
+        import motion
+        if motion.strength() <= 0:
+            return [0.55, 0.9, 0.7, 0.4]
+        ph = (time.monotonic() if now is None else now)
+        out = []
+        for k in range(TrackDelegate.EQ_BARS):                  # две синусоиды на столбик — без видимого повтора
+            v = 0.5 + 0.3 * math.sin(ph * (6.1 + 1.3 * k) + k * 1.9) + 0.2 * math.sin(ph * (9.7 - 0.9 * k) + k * 0.7)
+            out.append(max(0.16, min(1.0, v)))
+        return out
+
+    def _paint_eq(self, p: QPainter, cov_r: QRect, playing: bool):
+        """Эквалайзер поверх обложки играющей строки — рисуется вживую, поверх готовой картинки строки."""
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(YELLOW))
+        bw, gap, top_h = 3.0, 2.5, 17.0
+        n = self.EQ_BARS
+        x0 = cov_r.center().x() + 0.5 - (n * bw + (n - 1) * gap) / 2
+        base = cov_r.center().y() + 0.5 + top_h / 2
+        for k, v in enumerate(self.eq_levels(playing)):
+            h = max(3.0, top_h * v)
+            p.drawRoundedRect(QRectF(x0 + k * (bw + gap), base - h, bw, h), 1.5, 1.5)
+        p.restore()
+
     def paint(self, p: QPainter, opt, idx):
         """Строка рисуется один раз в картинку и дальше копируется (прокрутка без потери кадров);
-        пересобирается, когда меняется трек, обложка, наведение, выделение, «играет», лайк, загрузка."""
+        пересобирается, когда меняется трек, обложка, наведение, выделение, «играет», лайк, загрузка.
+        Вживую поверх картинки — только эквалайзер на обложке играющего трека."""
         row = _row(idx)
         if not row:
             return
+        self._paint_cached(p, opt, row)
+        hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
+        if not hover and not row.get("remote") and self.shell.is_current(row["t"]):
+            playing = self.shell.is_playing()
+            self._paint_eq(p, self.zones(opt.rect)[1], playing)
+            view = getattr(opt, "widget", None)
+            if playing and hasattr(view, "eq_seen"):
+                view.eq_seen(idx.row())                        # только эта строка перерисовывается по кадрам
+
+    def _paint_cached(self, p: QPainter, opt, row):
         t = row["t"]
         r = opt.rect
         pv = row.get("pv") or ("idle", 0)
@@ -1026,7 +1111,8 @@ class TrackDelegate(QStyledItemDelegate):
             return self._paint_row(p,opt,row)
         key = (r.width(), r.height(), dpr, hover, sel, remote, bool(row.get("owned")), cur,
                cur and self.shell.is_playing(), not remote and self.shell.is_liked(t), str(row.get("dl")), str(pv),
-               cpk, t.get("title"), t.get("artist"), t.get("duration"), TEXT, MUTED, YELLOW)
+               cpk, t.get("title"), t.get("artist"), t.get("duration"), t.get("album"), row.get("ctx"),
+               TEXT, MUTED, YELLOW)
         if c is None or c[0] != key:
             buf = QPixmap(max(1, int(r.width() * dpr + 0.5)), max(1, int(r.height() * dpr + 0.5)))
             buf.setDevicePixelRatio(dpr)
@@ -1070,12 +1156,24 @@ class TrackDelegate(QStyledItemDelegate):
                           lazy=view.viewport() if hasattr(view, "viewport") else view)
         p.drawPixmap(cov_r, pm)
         if hover or cur:
-            p.fillRect(cov_r, QColor(0, 0, 0, 110))
-            ic = ya_icon("download" if remote else
-                         ("pause" if (cur and self.shell.is_playing()) else "play"), 18, "#ffffff")
-            ic.paint(p, cov_r.adjusted(11, 11, -11, -11))
+            shade = QPainterPath()                             # затемнение — по скруглению обложки
+            shade.addRoundedRect(QRectF(cov_r), 6, 6)
+            p.fillPath(shade, QColor(0, 0, 0, 120 if hover else 140))
+            if hover:                                          # наведение — значок действия; без него на играющей
+                ic = ya_icon("download" if remote else         # строке вживую рисуется эквалайзер (_paint_eq)
+                             ("pause" if (cur and self.shell.is_playing()) else "play"), 18, "#ffffff")
+                ic.paint(p, cov_r.adjusted(11, 11, -11, -11))
         tx = cov_r.right() + 14
         tw = dots_r.left() - tx - 10
+        alb = self.album_of(row)
+        alb_r = self.album_zone(r) if alb else None
+        if alb_r is not None and alb_r.width() >= 40:           # альбом — в пустой середине широкой строки
+            tw = alb_r.left() - tx - 24
+            fa = ya_font(12)
+            p.setFont(fa)
+            p.setPen(QColor("#cfcfcf") if hover else QColor(MUTED))
+            p.drawText(alb_r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       QFontMetrics(fa).elidedText(alb, Qt.TextElideMode.ElideRight, alb_r.width()))
         title = sanitize_title(t.get("title", "") or "Без названия")
         artist = t.get("artist") or "Неизвестный исполнитель"
         f = ya_font(14, QFont.Weight.DemiBold)
@@ -1138,8 +1236,8 @@ class TrackDelegate(QStyledItemDelegate):
         else:
             liked = self.shell.is_liked(t)
             if liked or hover:
-                ya_icon("heart_fill" if liked else "heart", 20, "#ffffff" if liked else "#9a9a9a").paint(
-                    p, heart_r.adjusted(4, 4, -4, -4))
+                ya_icon("heart_fill" if liked else "heart", 20, YELLOW if liked else "#9a9a9a").paint(
+                    p, heart_r.adjusted(4, 4, -4, -4))                 # лайк виден всегда — в цвет оформления
         p.setFont(ya_font(12))
         p.setPen(QColor(MUTED))
         dur = float(t.get("duration") or 0)
@@ -1237,10 +1335,39 @@ class TrackListView(QListView):
         self._drag_from = None          # (строка, y нажатия) — для перетаскивания в плейлисте
         self._drag_on = False
         self._drop_at = -1
+        self._eq_row = -1               # строка играющего трека (эквалайзер на обложке) и когда её рисовали
+        self._eq_at = 0.0
+        self._eq_timer = None
         from PyQt6.QtGui import QShortcut, QKeySequence
         sc = QShortcut(QKeySequence(Qt.Key.Key_Delete), self)
         sc.setContext(Qt.ShortcutContext.WidgetShortcut)
         sc.activated.connect(self._delete_key)
+
+    def eq_seen(self, row: int):
+        """Делегат нарисовал эквалайзер играющей строки: дальше по кадрам обновляется только её обложка.
+        Таймер сам гаснет, когда строку перестали рисовать (ушла из вида, пауза, другой трек) или анимации выключены."""
+        self._eq_row, self._eq_at = row, time.monotonic()
+        tm = self._eq_timer
+        if tm is None:
+            tm = self._eq_timer = FrameTimer(self)
+            tm.setInterval(50)
+            tm.timeout.connect(self._eq_tick)
+        if not tm.isActive():
+            import motion
+            if motion.strength() > 0:
+                tm.start()
+
+    def _eq_tick(self):
+        try:
+            alive = self.isVisible() and time.monotonic() - self._eq_at < 0.4 and self.shell.is_playing() \
+                and 0 <= self._eq_row < self.model_.rowCount()
+        except RuntimeError:
+            alive = False
+        if not alive:
+            self._eq_timer.stop()
+            return
+        r = self.visualRect(self.model_.index(self._eq_row))
+        self.viewport().update(TrackDelegate.zones(r)[1])
 
     def selectionCommand(self, index, event=None):
         """Выделять треки — только с зажатым Ctrl (Ctrl+клик, Ctrl+Shift+клик — диапазон, Ctrl+A).
@@ -1349,6 +1476,10 @@ class TrackListView(QListView):
                 else:
                     self.shell.play_row(row)
                 self.viewport().update()
+                return
+            ah = TrackDelegate.album_hit(self.visualRect(idx), row)
+            if ah is not None and ah.contains(pt) and not (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                self.shell.open_album(TrackDelegate.album_of(row).lower())   # клик по альбому — открыть альбом
                 return
         super().mousePressEvent(e)
 
@@ -2044,9 +2175,31 @@ class Logo(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(54)
-        self.setMinimumWidth(150)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("На главную")
+
+    def _text_font(self) -> QFont:
+        f = QFont(self.font())                                 # тот же строгий шрифт, что в шапке окна
+        if TITLE_FAMILIES:
+            f.setFamilies(TITLE_FAMILIES)
+        f.setPixelSize(21)
+        f.setWeight(QFont.Weight.ExtraBold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3.4)
+        return f
+
+    def sizeHint(self):
+        # ширина — по настоящему шрифту: с широким шрифтом темы «ECHOES» обрезалось до «ECHOE»
+        w = 48 + QFontMetrics(self._text_font()).horizontalAdvance("ECHOES") + 10
+        return QSize(max(150, w), 54)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def changeEvent(self, e):
+        if e.type() == QEvent.Type.FontChange:
+            self.updateGeometry()
+        super().changeEvent(e)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -2084,14 +2237,9 @@ class Logo(QWidget):
         p.setBrush(g)
         p.drawPath(path)
         p.setPen(acc)
-        f = QFont(self.font())                                 # тот же строгий шрифт, что в шапке окна
-        if TITLE_FAMILIES:
-            f.setFamilies(TITLE_FAMILIES)
-        f.setPixelSize(21)
-        f.setWeight(QFont.Weight.ExtraBold)
-        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3.4)
-        p.setFont(f)
-        p.drawText(QRectF(48, 6, 200, 42), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "ECHOES")
+        p.setFont(self._text_font())
+        p.drawText(QRectF(48, 6, max(200, self.width() - 48), 42),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "ECHOES")
         p.end()
 
 
@@ -2168,15 +2316,27 @@ class ProgressLine(QWidget):
         self._hx = None
         self._grow = 0.0
         self._bubble = None
+        self.times = False                 # «прошло / всего» по краям полоски (show_times)
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(140)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.valueChanged.connect(lambda v: (setattr(self, "_grow", float(v)), self.update()))
 
+    TIME_PAD = 60                          # место под «02:07» с каждой стороны
+
+    def show_times(self, on=True):
+        """Время по краям полоски: слева — сколько прошло, справа — длина трека. Без них позицию
+        было видно только при наведении на полоску."""
+        self.times = bool(on)
+        self.PAD = self.TIME_PAD if on else ProgressLine.PAD
+        self.update()
+
     def set_state(self, frac, dur):
         frac = max(0.0, min(1.0, frac))
         # 10 раз/с из таймера оболочки: перерисовать, только если ползунок сдвинулся хотя бы на полпикселя
-        if dur == self.dur and abs(frac - self.frac) * max(1, self.width() - 2 * self.PAD) < 0.5:
+        # (или сменилась секунда в подписи времени)
+        if dur == self.dur and abs(frac - self.frac) * max(1, self.width() - 2 * self.PAD) < 0.5 \
+                and not (self.times and int(frac * dur) != int(self.frac * dur)):
             return
         self.frac = frac
         self.dur = dur
@@ -2269,6 +2429,15 @@ class ProgressLine(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         frac = self._drag if self._drag is not None else self.frac
         fx = x0 + (x1 - x0) * frac
+        if self.times and self.dur > 0:                         # «прошло» слева, «всего» справа
+            p.setFont(ya_font(11, QFont.Weight.DemiBold))
+            p.setPen(QColor(255, 255, 255, 235 if (self._hover or self._drag is not None) else 150))
+            p.drawText(QRectF(0, 0, x0 - 10, H), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       _fmt(frac * self.dur))
+            p.setPen(QColor(255, 255, 255, 150))
+            p.drawText(QRectF(x1 + 10, 0, W - x1 - 10, H), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       _fmt(self.dur))
+            p.setPen(Qt.PenStyle.NoPen)
         if getattr(self, "moments", None):                      # метки реакций друзей на моменты трека
             import net_moments
             net_moments.paint_marks(self, p, x0, x1, H)
@@ -2603,6 +2772,90 @@ class PlaylistPopup(QFrame):
         for i in range(self.lst.count()):
             it = self.lst.item(i)
             it.setHidden(bool(t) and t not in str(it.data(Qt.ItemDataRole.UserRole)).lower())
+
+
+class PlayerMorePopup(QFrame):
+    """«Ещё» в нижнем плеере: всё, что раньше стояло в ряд значками без подписей, — списком «значок + название»
+    (и сочетание клавиш справа). Пункты даёт YaShell.player_more_items()."""
+
+    def __init__(self, shell, anchor):
+        super().__init__(shell.win, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint |
+                         Qt.WindowType.NoDropShadowWindowHint)
+        self.shell = shell
+        self.buttons = {}                                      # ключ пункта → кнопка
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        from echo_glass import GlassFrame
+        from ya_skin import interface_radius
+        box = GlassFrame(self, max(8, min(18, interface_radius(16))))
+        box.setObjectName("YaMorePop")
+        box.setStyleSheet(
+            "QFrame#YaMorePop{background:transparent;border:none;} QLabel{background:transparent;}"
+            "QPushButton#YaMoreItem{background:transparent;border:none;border-radius:10px;padding:0 12px;"
+            f"text-align:left;font-size:13px;font-weight:600;color:{TEXT};}}"
+            "QPushButton#YaMoreItem:hover{background:rgba(255,255,255,0.09);}"
+            "QPushButton#YaMoreItem:pressed{background:rgba(255,255,255,0.15);}")
+        outer.addWidget(box)
+        v = QVBoxLayout(box)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(2)
+        for it in shell.player_more_items():
+            b = QPushButton("   " + it["text"], box)
+            b.setObjectName("YaMoreItem")
+            b.setIcon(it["icon"] if isinstance(it["icon"], QIcon) else ya_icon(it["icon"], 20, "#e6e6e6"))
+            b.setIconSize(QSize(20, 20))
+            b.setFixedHeight(40)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            if it.get("tip"):
+                b.setToolTip(it["tip"])
+            if it.get("hint"):                                 # сочетание клавиш — справа, приглушённо
+                hl = QHBoxLayout(b)
+                hl.setContentsMargins(0, 0, 12, 0)
+                hl.addStretch(1)
+                k = QLabel(it["hint"], b)
+                k.setStyleSheet(f"font-size:11px;font-weight:600;color:{MUTED};")
+                k.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                hl.addWidget(k)
+            b.clicked.connect(lambda _=False, key=it["key"]: self.trigger(key))
+            self.buttons[it["key"]] = b
+            v.addWidget(b)
+        self.resize(312, 16 + len(self.buttons) * 42 - 2)
+        g = anchor.mapToGlobal(anchor.rect().topRight())
+        scr = anchor.screen().availableGeometry()
+        x = min(max(scr.left() + 8, g.x() - self.width() + 6), scr.right() - self.width() - 8)
+        self.move(x, max(scr.top() + 8, g.y() - self.height() - 10))
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        import motion
+        if motion.strength() <= 0:
+            return
+        end = self.pos()                                       # окошко «выныривает» из-под кнопки
+        a = self._in_anim = QVariantAnimation(self)
+        a.setDuration(motion.duration(180))
+        a.setStartValue(0.0)
+        a.setEndValue(1.0)
+        a.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.setWindowOpacity(0.0)
+        a.valueChanged.connect(lambda v: (self.setWindowOpacity(float(v)),
+                                          self.move(end.x(), end.y() + int(round((1.0 - float(v)) * 16)))))
+        a.start()
+
+    def trigger(self, key):
+        """Нажатие на пункт: окошко закрывается, действие — следующим шагом (оно само может открыть меню/панель)."""
+        fn = next((it["fn"] for it in self.shell.player_more_items() if it["key"] == key), None)
+        self.close()
+        if fn is not None:
+            QTimer.singleShot(0, fn)
+
+    def closeEvent(self, e):
+        self.shell._more_closed_at = time.monotonic()
+        if self.shell.__dict__.get("_more_pop") is self:
+            self.shell._more_pop = None
+        super().closeEvent(e)
 
 
 class NetCornerArt(QWidget):
@@ -3006,6 +3259,28 @@ class YaShell(QWidget):
             lp = self._liked_cache = self._liked_paths()
         return str(t.get("path", "")) in lp
 
+    def _like_pop(self, t):
+        """Лайк играющего трека — сердце в нижнем плеере «подпрыгивает»."""
+        import motion
+        b = getattr(self, "b_like", None)
+        if b is None or motion.strength() <= 0 or not self.is_current(t):
+            return
+        a = self.__dict__.get("_like_anim")
+        if a is None:
+            a = self._like_anim = QVariantAnimation(self)
+            a.setStartValue(0.0)
+            a.setEndValue(1.0)
+
+            def step(v):
+                v = float(v)
+                n = int(round(20 + 11 * math.sin(math.pi * v) * (1.0 - v * 0.6)))
+                b.setIconSize(QSize(n, n))
+            a.valueChanged.connect(step)
+            a.finished.connect(lambda: b.setIconSize(QSize(20, 20)))
+        a.stop()
+        a.setDuration(motion.duration(420))
+        a.start()
+
     def toggle_like(self, t):
         pls = self.win.playlists
         pl = pls.setdefault(LIKED, {"tracks": [], "desc": "Треки, которые вам понравились", "cover": ""})
@@ -3014,6 +3289,7 @@ class YaShell(QWidget):
             pl["tracks"] = [x for x in pl["tracks"] if str(x.get("path", "")) != path]
         else:
             pl["tracks"].insert(0, dict(t))
+            self._like_pop(t)
             if hasattr(self, "_wave_good"):
                 self.wave_like_seed(t)               # лайк в волне — следующее новое будет похоже на этот трек
         self._liked_cache = None
@@ -3327,6 +3603,9 @@ class YaShell(QWidget):
             self.win._listening_tools.dialog = self._listener_panel
         if key not in self.pages:
             return
+        np_ = self.__dict__.get("_now_playing")
+        if np_ is not None and np_.isVisible():                # переход на страницу — экран «Сейчас играет» убирается
+            np_.close_mode(instant=True)
         try:                                                   # «Моя волна» — панели вокруг уходят в темноту
             import wave_veil
             wave_veil.install(self).set_on(key == "wave")
@@ -3550,20 +3829,18 @@ class YaShell(QWidget):
         v.setContentsMargins(0, 2, 0, 8)
         v.setSpacing(0)
         self.progress = ProgressLine()
+        self.progress.show_times(True)
         self.progress.seek_to.connect(self._seek_frac)
         v.addWidget(self.progress)
         h = QHBoxLayout()
         h.setContentsMargins(12, 0, 14, 0)
         h.setSpacing(6)
-        tb = icon_button("palette", "Сменить тему", 40, 20, "#e6e6e6")   # бывший отдельный уголок слева
-        tb.clicked.connect(lambda: w._winamp_theme_menu(tb.mapToGlobal(tb.rect().topLeft())))
-        h.addWidget(tb)
-        h.addSpacing(4)
+        h.addSpacing(2)                                        # «Сменить тему» переехала в «Ещё» справа
         # слева: обложка + название
         from ya_decor import VinylCover, PlayButton, MiniLyric
         self.p_cover = VinylCover(52, 6)                       # из-за обложки выглядывает пластинка
         self.p_cover.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.p_cover.setToolTip("Найти трек в коллекции (правый клик — ещё: показать в проводнике, текст)")
+        self.p_cover.setToolTip("Сейчас играет — на весь экран (Ctrl+Shift+N). Правый клик — найти в коллекции, текст, ещё")
         self.p_cover.mousePressEvent = self._p_cover_press
         h.addWidget(self.p_cover)
         h.addSpacing(2)
@@ -3600,71 +3877,104 @@ class YaShell(QWidget):
         h.addStretch(1)
         h.addLayout(center)
         h.addStretch(1)
-        # справа
-        self.b_moment = QPushButton("🔥")                     # реакция на момент трека — видят друзья
-        self.b_moment.setObjectName("YaIcon")
-        self.b_moment.setFixedSize(36, 36)
-        self.b_moment.setToolTip("Реакция на этот момент трека — друзья увидят её, когда будут его слушать")
-        self.b_moment.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.b_moment.setStyleSheet("QPushButton{font-size:16px;}")
-        self.b_moment.clicked.connect(lambda: __import__("net_moments").show_picker(self, self.b_moment))
+        # справа: только текст, очередь и громкость; всё остальное — в «Ещё» с подписями (PlayerMorePopup)
         self.btn_lyrics = icon_button("lyrics", "Текст песни", 36, 20, "#cfcfcf", True)
         self.btn_lyrics.clicked.connect(self.toggle_lyrics)
         self.btn_queue = icon_button("queue", "Очередь", 36, 20, "#cfcfcf")
         self.btn_queue.clicked.connect(self.toggle_queue)
-        b_cover = icon_button("cover", "Режим обложки", 36, 20, "#cfcfcf")
-        b_cover.clicked.connect(w._toggle_cover_mode)
-        b_clip = icon_button("clip", "Клип песни (Ctrl+Shift+K)", 36, 20, "#cfcfcf")
-        b_clip.clicked.connect(w._toggle_clip_mode)
-        self.b_sound = icon_button("eq", "Звук: басс буст, громкость, найткор, словед", 36, 20, "#cfcfcf")
-        self.b_sound.clicked.connect(self.toggle_sound_panel)
-        b_set = icon_button("settings", "Звук и настройки", 36, 20, "#cfcfcf")
-        b_set.clicked.connect(lambda: self.show_page("settings"))
-        self.b_vol = icon_button("volume", "Громкость", 34, 20, "#cfcfcf")
+        self.b_vol = icon_button("volume", "Громкость: нажмите — выключить звук", 34, 20, "#cfcfcf")
         self.b_vol.clicked.connect(self._toggle_mute)
         self.vol = QSlider(Qt.Orientation.Horizontal)
         self.vol.setRange(0, 100)
         self.vol.setFixedWidth(90)
+        self.vol.setToolTip("Громкость")
         self.vol.setValue(w.vol.value())
         self.vol.valueChanged.connect(lambda v: w.vol.setValue(v))
-        self.b_pmore = icon_button("dots", "Ещё: клип, режим обложки, звук, настройки", 36, 20, "#cfcfcf")
-        self.b_pmore.clicked.connect(self._player_more_menu)
-        self.b_pmore.hide()
-        self._p_extra = [(b_clip, "Клип песни", w._toggle_clip_mode), (b_cover, "Режим обложки", w._toggle_cover_mode),
-                         (self.b_sound, "Звук: басс буст, громкость, найткор", self.toggle_sound_panel),
-                         (b_set, "Звук и настройки", lambda: self.show_page("settings"))]
-        for b in (self.b_moment, self.btn_lyrics, self.btn_queue, b_clip, b_cover, b_set, self.b_sound, self.b_pmore,
-                  self.b_vol):
+        self.b_pmore = icon_button("dots", "Ещё: сейчас играет, клип, реакция, звук, тема, настройки", 36, 20, "#cfcfcf")
+        self.b_pmore.clicked.connect(self.toggle_player_more)
+        # панель «Звук» и выбор реакции всплывают над «Ещё» (раньше — над своими кнопками)
+        self.b_sound = self.b_moment = self.b_pmore
+        self._more_pop = None
+        self._more_closed_at = 0.0
+        for b in (self.btn_lyrics, self.btn_queue, self.b_pmore):
             h.addWidget(b)
+        h.addSpacing(6)
+        h.addWidget(self.b_vol)
         h.addWidget(self.vol)
         self._player_bar = bar
         v.addLayout(h, 1)
         self._muted_from = None
         return bar
 
-    def _player_more_menu(self):
-        m = QMenu(self)
-        for b, text, fn in self._p_extra:
-            m.addAction(text, fn)
-        m.exec(self.b_pmore.mapToGlobal(self.b_pmore.rect().topLeft()) - QPoint(0, 8 + 4 * 30))
+    def player_more_items(self) -> list:
+        """Пункты «Ещё» в плеере: ключ, значок, подпись, сочетание клавиш, действие."""
+        w = self.win
+        fire = self.__dict__.get("_fire_icon")
+        if fire is None:                                       # «🔥» — значком того же размера, что остальные
+            pm = QPixmap(40, 40)
+            pm.fill(Qt.GlobalColor.transparent)
+            fp = QPainter(pm)
+            ff = QFont("Segoe UI Emoji")
+            ff.setPixelSize(28)
+            fp.setFont(ff)
+            fp.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "🔥")
+            fp.end()
+            pm.setDevicePixelRatio(2)
+            fire = self._fire_icon = QIcon(pm)
+        return [
+            {"key": "now", "icon": "headphones", "text": "Сейчас играет", "hint": "Ctrl+Shift+N",
+             "tip": "Обложка, текст и очередь — на всё окно",
+             "fn": self.open_now_playing},
+            {"key": "moment", "icon": fire, "text": "Реакция на этот момент",
+             "tip": "Реакция на этот момент трека — друзья увидят её, когда будут его слушать",
+             "fn": lambda: __import__("net_moments").show_picker(self, self.b_pmore)},
+            {"key": "clip", "icon": "clip", "text": "Клип песни", "hint": "Ctrl+Shift+K", "fn": w._toggle_clip_mode},
+            {"key": "cover", "icon": "cover", "text": "Режим обложки", "fn": w._toggle_cover_mode},
+            {"key": "sound", "icon": "eq", "text": "Звук и эффекты",
+             "tip": "Звук: басс буст, громкость, найткор, словед", "fn": self.toggle_sound_panel},
+            {"key": "theme", "icon": "palette", "text": "Сменить тему",
+             "fn": lambda: w._winamp_theme_menu(self.b_pmore.mapToGlobal(self.b_pmore.rect().topLeft()))},
+            {"key": "settings", "icon": "settings", "text": "Настройки", "hint": "Ctrl+,",
+             "fn": lambda: self.show_page("settings")},
+        ]
+
+    def open_player_more(self):
+        self.close_player_more()
+        self._more_pop = PlayerMorePopup(self, self.b_pmore)
+        self._more_pop.show()
+        return self._more_pop
+
+    def close_player_more(self):
+        pop = self.__dict__.get("_more_pop")
+        if pop is not None:
+            self._more_pop = None
+            try:
+                pop.close()
+            except RuntimeError:
+                pass
+
+    def toggle_player_more(self):
+        if self.__dict__.get("_more_pop") is not None:
+            self.close_player_more()
+        elif time.monotonic() - self.__dict__.get("_more_closed_at", 0.0) > 0.25:   # клик по кнопке уже закрыл окошко
+            self.open_player_more()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         dec = getattr(self, "decor", None)
         if dec is not None:
             dec._gap = None
+        np_ = self.__dict__.get("_now_playing")
+        if np_ is not None and np_.isVisible():
+            np_.setGeometry(self.rect())
         self._responsive()                                     # сразу — до первого кадра нового размера
         QTimer.singleShot(0, self._responsive)                 # и после раскладки (ширина плеера уже новая)
 
     def _responsive(self):
-        """Узкое окно: разделы — только значками, лишние кнопки плеера — в «⋯», ник прячется."""
+        """Узкое окно: разделы — только значками, ползунок громкости и ник прячутся."""
         W = self.width()
         bar = getattr(self, "_player_bar", None)
         if bar is not None:
-            tight = bar.width() < 980
-            for b, _t, _f in self._p_extra:
-                b.setVisible(not tight)
-            self.b_pmore.setVisible(tight)
             self.vol.setVisible(bar.width() >= 760)
         if self._layout_mode != "new":
             return
@@ -4242,11 +4552,16 @@ class YaShell(QWidget):
             page.v.addWidget(wait)
             return
 
-        def track_row(title, tracks):
+        import fy_feedback as FB
+        fbs = getattr(self.win, "settings", None) or {}
+
+        def track_row(title, tracks, genre="", rank=True):
+            tracks = FB.shape(fbs, tracks, rank=rank)      # 👎 — убрать, 👍-исполнителей — вперёд
             if not tracks:
                 return
             page.v.addWidget(section_title(title))
             row = card_row()
+            pairs = []
             for i, t in enumerate(tracks):
                 sub = t.get("artist", "")
                 if t.get("because") and t["because"].startswith("похож"):
@@ -4257,11 +4572,37 @@ class YaShell(QWidget):
                 if hov is not None:                            # навели — ссылку на поток готовим заранее
                     hov.connect(lambda t=t: self._stream_hint(t))
                 self._fy_cover(c, t.get("cover_url", ""))
+                pairs.append((c, t))
             page.v.addWidget(row.widget_)
+            FB.bind(self, row, pairs, genre)
+
+        ups, downs = FB.counts(fbs)
+        if ups or downs:
+            hint = QLabel(f"Лента учитывает ваши оценки: 👍 {ups} · 👎 {downs}. Наведите на карточку или нажмите "
+                          "правой кнопкой — «больше такого» / «меньше такого».")
+        else:
+            hint = QLabel("Наведите на карточку: 👍 — больше такого, 👎 — меньше такого. Лента подстроится.")
+        hint.setObjectName("YaSub")
+        hint.setWordWrap(True)
+        page.v.addWidget(hint)
+        if ups or downs:
+            rst = QPushButton("Сбросить оценки")
+            rst.setObjectName("YaChip")
+            rst.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            def _reset():
+                FB.reset(self.win.settings)
+                self.win.save_settings()
+                self._rebuild("foryou")
+            rst.clicked.connect(_reset)
+            hr = QHBoxLayout()
+            hr.addWidget(rst)
+            hr.addStretch(1)
+            page.v.addLayout(hr)
 
         if trends:
-            track_row("Тренды · Чарт России", trends.get("ru") or [])
-            track_row("Тренды · Мировой чарт", trends.get("world") or [])
+            track_row("Тренды · Чарт России", trends.get("ru") or [], rank=False)
+            track_row("Тренды · Мировой чарт", trends.get("world") or [], rank=False)
             try:                                               # где эти треки на YouTube — заранее, в простое
                 import stream_core
                 warm = [stream_core.make_track(t) for t in ((trends.get("ru") or [])[:8] + (trends.get("world") or [])[:8])]
@@ -4282,7 +4623,7 @@ class YaShell(QWidget):
             track_row("Ещё от ваших исполнителей — этого нет в коллекции", recs.get("more") or [])
             for g in recs.get("genres") or []:
                 track_row(f"Новое в жанре «{g['name']}» · {int(round(g['share'] * 100))} % вашей коллекции",
-                          g.get("tracks") or [])
+                          g.get("tracks") or [], genre=g["name"])
 
     def _fy_cover(self, card, url):
         if not url:
@@ -4903,10 +5244,12 @@ class YaShell(QWidget):
         top.addStretch(1)
         self.c_search = QLineEdit()
         self.c_search.setPlaceholderText("Поиск в коллекции")
-        self.c_search.setFixedWidth(230)
+        self.c_search.setMinimumWidth(110)                     # в узком окне поле сжимается, а не уезжает
+        self.c_search.setMaximumWidth(230)                     # под кнопку «+»
+        self.c_search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.c_search.addAction(ya_icon("search", 16, "#8a8a8a"), QLineEdit.ActionPosition.LeadingPosition)
         self.c_search.textChanged.connect(lambda _: self._coll_apply())
-        top.addWidget(self.c_search)
+        top.addWidget(self.c_search, 100)                      # растёт первым (до 230), остальное — отступу
         for ic, tip, fn in (("plus", "Добавить файлы", self.win._add_files),
                             ("folder", "Добавить папку", self.win._add_folder),
                             ("download", "Скачать по ссылке", self.win._open_downloader)):
@@ -4984,6 +5327,7 @@ class YaShell(QWidget):
         t = self.current_track()
         if e.button() == Qt.MouseButton.RightButton:
             m = QMenu(self)
+            m.addAction("Сейчас играет — на весь экран  (Ctrl+Shift+N)", self.open_now_playing)
             m.addAction("Найти в коллекции", lambda: self.find_in_collection(t))
             if t is not None:
                 self.win.reveal_action(m, t)
@@ -4994,7 +5338,31 @@ class YaShell(QWidget):
             m.exec(QCursor.pos())
             return
         if e.button() == Qt.MouseButton.LeftButton:
-            self.find_in_collection(t)
+            self.open_now_playing()
+
+    # ── «Сейчас играет» во всё окно (now_playing.py) ── #
+
+    def now_playing_open(self) -> bool:
+        np_ = self.__dict__.get("_now_playing")
+        return bool(np_ is not None and np_.is_open())
+
+    def open_now_playing(self, mode=None):
+        np_ = self.__dict__.get("_now_playing")
+        if np_ is None:
+            from now_playing import NowPlaying
+            np_ = self._now_playing = NowPlaying(self)
+        np_.open(mode)
+
+    def close_now_playing(self, instant=False):
+        np_ = self.__dict__.get("_now_playing")
+        if np_ is not None:
+            np_.close_mode(instant=instant)
+
+    def toggle_now_playing(self):
+        if self.now_playing_open():
+            self.close_now_playing()
+        else:
+            self.open_now_playing()
 
     def find_in_collection(self, t=None):
         """Открыть «Коллекцию» на этом треке: сбросить поиск и фильтр, прокрутить, выделить."""
@@ -5876,12 +6244,6 @@ class YaShell(QWidget):
             image = read_image(path, 1280)
             if not image.isNull():
                 accent = image.pixelColor(image.width() // 2, image.height() // 2)
-                try:
-                    import blur_fx
-                    cover = blur_fx.blurred_cover(image, max(1, size.width()), max(1, size.height()),
-                                                   max(size.width(), size.height()) / 34)
-                except Exception as e:
-                    print('[lyrics glass blur]', e)
         glass = self.win.settings.get('lyrics_display', {}).get('liquid_glass', True)
         src = image if path and Path(path).is_file() and not image.isNull() else None
         if src is not None:                                    # фон как на iPhone — всегда; «стекло» в настройках —
@@ -5902,12 +6264,28 @@ class YaShell(QWidget):
             b.setVisible(bool(on))
 
     def toggle_lyrics(self):
+        """Кнопка текста в нижнем плеере: текст на весь экран — тот же экран, что у обложки (now_playing)."""
+        np_ = self.__dict__.get("_now_playing")
+        if np_ is not None and np_.is_open():
+            if np_.mode() == "lyrics":
+                np_.close_mode()
+            else:
+                np_.set_mode("lyrics")
+            return
         if self._cur_page == "lyrics":
             self.go_back()
-        else:
-            self._lyr_src = None
-            self.show_page("lyrics")
-            self._lyrics_tick(None, None)
+            return
+        try:
+            self.open_now_playing(mode="lyrics")
+        except Exception as e:                                 # noqa: BLE001
+            print("[lyrics] full screen:", e)
+            self.show_lyrics_tools()
+
+    def show_lyrics_tools(self):
+        """Прежняя страница текста: поиск вручную, синхронизация с ИИ, язык и оформление."""
+        self._lyr_src = None
+        self.show_page("lyrics")
+        self._lyrics_tick(None, None)
 
     def _refine_words(self, lines):
         """Через доли секунды — тайминги слов по звуку трека (word_sync), в фоне."""

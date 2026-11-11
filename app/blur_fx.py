@@ -125,9 +125,11 @@ def gauss_array(a: np.ndarray, sigma: float) -> np.ndarray:
 #  Картинки                                                           #
 # ------------------------------------------------------------------ #
 
-def blur_image(img: QImage, sigma: float, size: QSize | tuple | None = None, dither: bool = False) -> QImage:
+def blur_image(img: QImage, sigma: float, size: QSize | tuple | None = None, dither: bool = False,
+               post=None) -> QImage:
     """Гауссово размытие QImage с радиусом sigma (в пикселях результата).
-    size — размер результата (по умолчанию как у исходной)."""
+    size — размер результата (по умолчанию как у исходной). post(QImage) → QImage — обработка размытой
+    РАБОЧЕЙ копии до растяжения в размер результата (она в десятки раз меньше — цветокоррекция почти даром)."""
     if img is None or img.isNull():
         return QImage()
     if size is None:
@@ -159,6 +161,8 @@ def blur_image(img: QImage, sigma: float, size: QSize | tuple | None = None, dit
     else:
         a = gauss_array(to_array(work), s_small)
         small = from_array(a, dither=dither and (sw, sh) == (ow, oh))
+    if post is not None:
+        small = post(small)
     if (sw, sh) == (ow, oh):
         return small
     return small.scaled(ow, oh, _IGNORE, _SMOOTH)
@@ -200,9 +204,10 @@ def blurred_cover(src, w: int, h: int, sigma: float, dim: float = 0.0, sat: floa
         return out
     f = max(1.0, sigma / WORK_SIGMA)
     crop = cover_crop(img, w, h, max_side=int(max(w, h) / f * 2) + 8)
-    out = blur_image(crop, sigma, (w, h))
-    if abs(sat - 1.0) > 0.02:
-        out = saturate(out, sat)
+    # насыщенность — на рабочей копии: на картинке во весь экран это были 60–120 мс numpy в потоке
+    # интерфейса (открытие страницы текста, смена трека на ней); после сильного размытия разницы не видно
+    out = blur_image(crop, sigma, (w, h),
+                     post=(lambda im: saturate(im, sat)) if abs(sat - 1.0) > 0.02 else None)
     if dim > 0.003 or tint is not None:
         p = QPainter(out)
         if dim > 0.003:

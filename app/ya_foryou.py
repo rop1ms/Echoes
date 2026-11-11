@@ -18,6 +18,7 @@ import json
 import math
 import re
 import time
+from functools import lru_cache
 from pathlib import Path
 
 CACHE = data_home.root() / "foryou_net.json"
@@ -51,7 +52,12 @@ def _main_artist(a: str) -> str:
 
 
 def _norm(s: str) -> str:
-    s = (s or "").lower()
+    return _norm_c(s) if type(s) is str else _norm_c(str(s or ""))
+
+
+@lru_cache(maxsize=32768)
+def _norm_c(s: str) -> str:
+    s = s.lower()
     s = re.sub(r"\(.*?\)|\[.*?\]", " ", s)
     return re.sub(r"[^\w]+", " ", s).strip()
 
@@ -86,7 +92,7 @@ def taste(win) -> dict:
     prof = getattr(getattr(win, "_ya", None), "_profiles", None) or {}
     key = (id(getattr(win, "library", None)), len(lib), len(stats.get("artists") or {}), int(stats.get("total", 0) // 60),
            len(recent), (recent[-1].get("ts") if recent and isinstance(recent[-1], dict) else None),
-           len(prof), int(now // 600))
+           len(prof), int(now // 600), int(((getattr(win, "settings", None) or {}).get("foryou_fb") or {}).get("rev", 0)))
     if _TASTE["key"] == key and _TASTE["val"] is not None:
         return _TASTE["val"]
     val = _taste(win, lib, stats, now)
@@ -128,6 +134,26 @@ def _taste(win, lib, stats, now) -> dict:
                 continue
             nowscore[k] = nowscore.get(k, 0.0) + (w if i == 0 else w * 0.5)
             score[k] = score.get(k, 0.0) + 2.0 * w
+    # 👍/👎 в «Для вас» (fy_feedback): лайкнутые исполнители — в «ваши» (по ним ищутся похожие),
+    # дизлайкнутые — вниз, а с «меньше такого» дважды — вовсе не в затравку рекомендаций
+    import fy_feedback as FB
+    fb = FB.data(getattr(win, "settings", None) or {})
+    fb_art = {}
+    for e in fb["artists"].values():
+        if not isinstance(e, dict) or not e.get("n"):
+            continue
+        k = who(e["n"])
+        if not k:
+            continue
+        s_ = float(e.get("s", 0) or 0)
+        fb_art[k] = s_
+        if s_ > 0:
+            score[k] = score.get(k, 0.0) + 3.0 * s_
+        elif s_ <= FB.BLOCK:
+            score.pop(k, None)
+            nowscore.pop(k, None)
+        elif k in score:
+            score[k] *= 0.15
     # жанры: теги файлов, затем — профили music_intel (если уже посчитаны)
     gcount = {}
     for t in lib:
@@ -144,10 +170,12 @@ def _taste(win, lib, stats, now) -> dict:
     except Exception:                                      # noqa: BLE001
         pass
     gsum = sum(gcount.values()) or 1
-    genres = [(g[0], g[1], n / gsum) for g, n in sorted(gcount.items(), key=lambda x: -x[1])]
+    gw = {g[1]: FB.genre_factor(getattr(win, "settings", None) or {}, g[1]) for g in gcount}
+    genres = [(g[0], g[1], n / gsum) for g, n in sorted(gcount.items(), key=lambda x: -x[1] * gw[x[0][1]])]
     return {"top": [(disp[k], v) for k, v in sorted(score.items(), key=lambda x: -x[1])],
             "now": [(disp[k], v) for k, v in sorted(nowscore.items(), key=lambda x: -x[1])],
-            "genres": genres, "owned": owned, "owned_artists": owned_art, "total": len(lib)}
+            "genres": genres, "owned": owned, "owned_artists": owned_art, "total": len(lib),
+            "fb_art": fb_art, "genre_w": gw, "fb_rev": int(fb.get("rev", 0))}
 
 
 def now_artists(win, n=4) -> list[str]:
@@ -212,6 +240,8 @@ def _artist_id(name):
 def fetch_recs(tt: dict, seeds_n=6) -> dict:
     import concurrent.futures as cf
     owned, owned_art = tt["owned"], tt["owned_artists"]
+    fb_art = tt.get("fb_art") or {}
+    from artist_identity import ident as _ident
     seeds = [a for a, _ in tt["now"][:3]]
     for a, _ in tt["top"]:
         if len(seeds) >= seeds_n:
@@ -239,15 +269,17 @@ def fetch_recs(tt: dict, seeds_n=6) -> dict:
             for rank, d in enumerate(rel):
                 nm = d.get("name") or ""
                 from artist_identity import ident
-                if not nm or ident(nm) in owned_art:
+                if not nm or ident(nm) in owned_art or fb_art.get(ident(nm), 0) <= -2:
                     continue
                 e = cand.setdefault(nm, {"name": nm, "id": d.get("id"), "pic": d.get("picture_medium") or "",
                                          "fans": int(d.get("nb_fan") or 0), "score": 0.0, "because": []})
-                e["score"] += w / (1 + rank * 0.15)
+                e["score"] += w / (1 + rank * 0.15) * (1 + 0.35 * max(0.0, fb_art.get(ident(nm), 0)))
                 if a not in e["because"]:
                     e["because"].append(a)
             for d in top:                                  # «ещё от ваших исполнителей»
                 tr = _dz_track(d, a)
+                if fb_art.get(_ident(_main_artist(tr["artist"])), 0) <= -2:
+                    continue
                 if (_norm(_main_artist(tr["artist"])), _norm(tr["title"])) not in owned:
                     more.append(tr)
     # по очереди от каждого вашего исполнителя, чтобы один не забивал весь список
@@ -271,7 +303,7 @@ def fetch_recs(tt: dict, seeds_n=6) -> dict:
     genres = []
     seen = {(_norm(t["artist"]), _norm(t["title"])) for t in tracks + more}
     for gid, gname, share in tt["genres"][:3]:
-        if share < 0.08:
+        if share * (tt.get("genre_w") or {}).get(gname, 1.0) < 0.08:
             continue
         try:
             data = _get(f"https://api.deezer.com/chart/{gid}/tracks", limit=40).get("data") or []
@@ -330,7 +362,7 @@ def save_cache(d: dict):
 
 
 def seeds_sig(tt: dict) -> str:
-    return "|".join(sorted(a for a, _ in tt["top"][:6]))
+    return "|".join(sorted(a for a, _ in tt["top"][:6])) + f"#{tt.get('fb_rev', 0)}"
 
 
 def stale(cache: dict, tt: dict) -> tuple[bool, bool]:

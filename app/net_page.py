@@ -363,6 +363,17 @@ class NetTitle(QWidget):
         p.end()
 
 
+class _WrapLabel(QLabel):
+    """Подпись с переносом строк, которая сама держит нужную высоту: в раскладке внутри баннера Qt считал
+    её однострочной, и вторая строка уходила под кнопку."""
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        h = self.heightForWidth(self.width())
+        if h > 0 and h != self.minimumHeight():
+            self.setMinimumHeight(h)
+
+
 class Hero(QFrame):
     """Баннер из чёрного стекла — для пустых состояний и «Слушать вместе»."""
 
@@ -379,7 +390,7 @@ class Hero(QFrame):
         t.setStyleSheet("background:transparent;color:#ffffff;font-size:26px;font-weight:900;")
         t.setFont(ya_font(26, QFont.Weight.Black))
         self.lay.addWidget(t)
-        s = QLabel(sub)
+        s = _WrapLabel(sub)
         s.setWordWrap(True)
         s.setMaximumWidth(640)
         s.setStyleSheet("background:transparent;color:#ebebeb;font-size:13px;")

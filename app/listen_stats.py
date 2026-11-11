@@ -108,9 +108,14 @@ class ListenStats:
         if not self._dirty:
             return
         try:
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(self.path)
+            payload = json.dumps(self.data, ensure_ascii=False).encode("utf-8")
+            try:                                     # диск — в фоновом потоке (на смене трека это были 5–20 мс)
+                import atomic_json
+                atomic_json.save_bytes_async(self.path, payload)
+            except ImportError:
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_bytes(payload)
+                tmp.replace(self.path)
             self._dirty = False
             self._saved = time.monotonic()
         except Exception as e:                       # noqa: BLE001

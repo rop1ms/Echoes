@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 
 _IO_LOCK=threading.RLock()
 
@@ -54,14 +55,48 @@ def load_json(path,default,validator=None):
         except (OSError,ValueError,UnicodeError):return default
 
 
-def _replace(path,payload):
+_OWN={}                                                   # путь → ((mtime_ns, size), номер записи)
+_IDS={}                                                   # путь → номер последней ЗАПРОШЕННОЙ записи
+_SEQ=[0]
+_ID_LOCK=threading.Lock()
+
+
+def _next_id(path):
+    with _ID_LOCK:
+        _SEQ[0]+=1;_IDS[str(path)]=_SEQ[0]
+        return _SEQ[0]
+
+
+def last_write_id(path):
+    """Номер последней записи этого файла, запрошенной в этом процессе (в очереди или уже на диске)."""
+    return _IDS.get(str(Path(path)))
+
+
+def written(path):
+    """(подпись файла, номер записи) сразу после последней записи из этого процесса; None — не писали.
+    По номеру library_guard отличает СВОЮ фоновую запись от чужой и не перечитывает всю коллекцию с диска
+    на каждой смене трека."""
+    return _OWN.get(str(Path(path)))
+
+
+def _replace(path,payload,wid=None):
     temporary=None
     try:
         fd,name=tempfile.mkstemp(prefix='.'+path.name+'.',suffix='.tmp',dir=path.parent)
         temporary=Path(name)
         with os.fdopen(fd,'wb') as stream:stream.write(payload)
-        os.replace(temporary,path)
+        # Windows: файл на миг держит антивирус или чтение (ежедневная копия) - замена падала с WinError 5,
+        # и сохранение молча терялось. Несколько коротких повторов (всего до 0,3 с).
+        for attempt in range(6):
+            try:
+                os.replace(temporary,path);break
+            except PermissionError:
+                if attempt==5:raise
+                time.sleep(0.02*(attempt+1))
         temporary=None
+        try:
+            st=path.stat();_OWN[str(path)]=((st.st_mtime_ns,st.st_size),wid)
+        except OSError:_OWN.pop(str(path),None)
     finally:
         if temporary is not None:
             try:temporary.unlink()
@@ -74,7 +109,7 @@ def save_json(path,obj):
     # an invalid object or unicode value must not truncate a healthy library.
     payload=json.dumps(obj,ensure_ascii=False,separators=(',',':')).encode('utf-8')
     with _IO_LOCK:
-        _replace(path,payload)
+        _replace(path,payload,_next_id(path))
         # Refresh the backup from the newly committed, known-valid payload, never
         # by copying a potentially corrupt preexisting target over the good copy.
         try:_replace(backup_path(path),payload)
@@ -95,13 +130,13 @@ def _writer():
         with _COND:
             while not _PENDING:
                 _COND.wait()
-            items=list(_PENDING.items());_PENDING.clear();_BUSY[0]+=1
+            items=[(key,payload,_IDS.get(key)) for key,payload in _PENDING.items()];_PENDING.clear();_BUSY[0]+=1
         try:
-            for key,payload in items:
+            for key,payload,wid in items:
                 path=Path(key)
                 try:
                     with _IO_LOCK:
-                        _replace(path,payload)
+                        _replace(path,payload,wid)
                         try:_replace(backup_path(path),payload)
                         except OSError as error:print('[data] last-good copy could not be updated:',path.name,str(error))
                 except OSError as error:
@@ -115,7 +150,7 @@ def save_json_async(path,obj):
     """Как save_json, но запись — в фоне; одна и та же запись подряд склеивается (пишется последняя)."""
     payload=json.dumps(obj,ensure_ascii=False,separators=(',',':')).encode('utf-8')
     with _COND:
-        _PENDING[str(Path(path))]=payload
+        _PENDING[str(Path(path))]=payload;_next_id(Path(path))
         if _WRITER[0] is None or not _WRITER[0].is_alive():
             _WRITER[0]=threading.Thread(target=_writer,daemon=True,name='json-writer');_WRITER[0].start()
         _COND.notify_all()
@@ -143,7 +178,7 @@ _atexit.register(flush)
 def save_bytes_async(path, payload: bytes):
     """Готовое содержимое JSON (уже сериализованное) — в очередь фоновой записи."""
     with _COND:
-        _PENDING[str(Path(path))]=bytes(payload)
+        _PENDING[str(Path(path))]=bytes(payload);_next_id(Path(path))
         if _WRITER[0] is None or not _WRITER[0].is_alive():
             _WRITER[0]=threading.Thread(target=_writer,daemon=True,name='json-writer');_WRITER[0].start()
         _COND.notify_all()

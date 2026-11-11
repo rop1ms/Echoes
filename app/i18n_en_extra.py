@@ -3578,3 +3578,18 @@ EXACT.update({                                   # v35: сортировка, э
     'Жёстко медленно — низко и тягуче': 'Ultra slow — low and heavy', 'Медленнее и ниже': 'Slower and lower',
     'Быстрее и выше': 'Faster and higher', 'Жёстко быстро — как бурундук': 'Ultra fast — chipmunk mode',
 })
+
+# «Сейчас играет» во всё окно, колонка альбома, «Ещё» в плеере
+EXACT.update({
+    'Сейчас играет — на весь экран (Ctrl+Shift+N). Правый клик — найти в коллекции, текст, ещё':
+        'Now playing — full window (Ctrl+Shift+N). Right click — find in collection, lyrics, more',
+    'Сейчас играет — на весь экран  (Ctrl+Shift+N)': 'Now playing — full window  (Ctrl+Shift+N)',
+    'Обложка, текст и очередь — на всё окно': 'Cover, lyrics and queue — across the whole window',
+    'Свернуть (Esc)': 'Close (Esc)',
+    'Далее': 'Up next',
+    'Громкость: нажмите — выключить звук': 'Volume: click to mute',
+    'Ещё: сейчас играет, клип, реакция, звук, тема, настройки':
+        'More: now playing, video, reaction, sound, theme, settings',
+    'Реакция на этот момент': 'React to this moment',
+    'Звук и эффекты': 'Sound and effects',
+})

@@ -161,6 +161,19 @@ def apply(skin) -> dict:
         custom_fonts.load_all()
     except Exception as e:                                     # noqa: BLE001
         print("[skin] fonts:", e)
+    try:
+        # Шрифт темы может быть из встроенного набора (assets/fonts/nick: BioRhyme, Unbounded, Comfortaa…).
+        # Тот набор регистрировался только при первом открытии профиля — до этого интерфейс собирался
+        # запасным шрифтом, а после часть надписей переключалась на выбранный: на экране два шрифта сразу.
+        from PyQt6.QtGui import QFontDatabase
+        want = [f for f in [s["font"], *TITLE_FAMILY.get(s["title_font"], [])] if f]
+        if want:
+            known = set(QFontDatabase.families())
+            if any(f not in known for f in want):
+                import net_nick
+                net_nick._load_fonts()
+    except Exception as e:                                     # noqa: BLE001
+        print("[skin] bundled fonts:", e)
     if not _ORIG:
         _ORIG.update(YELLOW=Y.YELLOW, BG=Y.BG, PANEL=Y.PANEL, PANEL2=Y.PANEL2, CARD=Y.CARD, TEXT=Y.TEXT,
                      MUTED=Y.MUTED, FAMILIES=list(Y.FAMILIES))

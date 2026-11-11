@@ -44,6 +44,7 @@ class Guard:
         self.dir, self.file, self._load, self._save = Path(data_dir), Path(lib_file), load, save
         self.sig = _stat(self.file)
         self.saved_n = None
+        self._wid = None                                  # номер нашей последней записи (atomic_json)
         self.removed: set = set()                         # пути, удалённые вами явно (не возвращать)
 
     def loaded(self, library):
@@ -58,6 +59,18 @@ class Guard:
         """Записать коллекцию. Возвращает, сколько треков пришлось вернуть из чужой записи."""
         added = 0
         now_sig = _stat(self.file)
+        if now_sig is not None and now_sig != self.sig:
+            # запись идёт в фоне (atomic_json): подпись, снятая сразу после save(), была ещё от старого файла,
+            # и следующая запись принимала СВОЙ же файл за чужой — вся коллекция читалась с диска в потоке
+            # интерфейса на каждой смене трека (десятки мс)
+            # Своя — только запись с НАШИМ номером: второй ECHOES (и второй Guard) получает другой.
+            try:
+                import atomic_json
+                done = atomic_json.written(self.file)
+                if done is not None and self._wid is not None and done == (now_sig, self._wid):
+                    self.sig = now_sig
+            except Exception:                                 # noqa: BLE001
+                pass
         if self.sig is not None and now_sig is not None and now_sig != self.sig:
             other = self._load(self.file)
             have = {str(t.get("path", "")) for t in library}
@@ -80,6 +93,11 @@ class Guard:
                 except OSError:
                     pass
         self._save(self.file, library)
+        try:
+            import atomic_json
+            self._wid = atomic_json.last_write_id(self.file)  # номер нашей записи (она может быть ещё в очереди)
+        except Exception:                                     # noqa: BLE001
+            self._wid = None
         self.sig = _stat(self.file)
         self.saved_n = n
         self._daily()
