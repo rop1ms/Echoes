@@ -38,6 +38,14 @@ Check the license shipped with the exact installed version of each dependency. T
 
 The ECHOES icon, drawn UI symbols, and original demonstration cover artwork are project assets. The screenshots use generated demo data and contain no bundled commercial recordings. The `EchoesSymbols.ttf` UI font is generated from ECHOES' own vector drawings.
 
+The Phantom-style interface (`app/ph_*.py`) bundles:
+
+| Asset | Location | License |
+| --- | --- | --- |
+| [Inter](https://github.com/rsms/inter) 4.001, split into Latin / Cyrillic / Greek subsets, families renamed `Inter PA*` | `app/assets/fonts/inter/` | SIL Open Font License 1.1 — [`app/assets/licenses/Inter-OFL.txt`](app/assets/licenses/Inter-OFL.txt) |
+| [Lucide](https://lucide.dev) icon outlines | `app/ph_icons_data.py` | ISC (some icons MIT, from Feather) — [`app/assets/licenses/lucide-LICENSE.txt`](app/assets/licenses/lucide-LICENSE.txt) |
+| Phantom Audio default background | `app/assets/ph/background.jpg` | Phantom Audio, same author as ECHOES |
+
 Emoji used for reactions are independent of the UI symbol font. The reaction asset loader can obtain Noto Emoji / other emoji artwork; retain the relevant upstream notices (for example, [Noto Emoji](https://github.com/googlefonts/noto-emoji)) for any redistributed assets. Downloaded artist artwork, lyrics, music, videos, osu! maps/skins, and user-imported themes are not relicensed by this repository. Only redistribute material you have permission to redistribute.
 
 ## Русский

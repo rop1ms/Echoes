@@ -1,6 +1,7 @@
 """Где интерфейс «замирает»: настоящий плеер на КОПИИ профиля, сторож ловит каждую паузу потока окна.
 
-python qa/probe_hitches.py [--offscreen] [--synthetic] [--ms 34] [--out файл.json] [сценарий ...]
+python qa/probe_hitches.py [--offscreen] [--synthetic] [--ms 34] [--out файл.json] [--layout phantom|new|classic]
+                           [сценарий ...]
 
 Поток окна каждые 4 мс ставит отметку. Сторож в другом потоке видит, что отметки нет дольше --ms,
 и записывает стек потока окна (каждые 4 мс, пока пауза не кончится) — так у каждой паузы есть виновник.
@@ -37,6 +38,7 @@ def _opt(name, default=None):
 
 LIMIT_MS = float(_opt("--ms", "34"))
 OUT = _opt("--out", str(ROOT / "qa" / "results" / "hitches.json"))
+LAYOUT = _opt("--layout")               # вид Echoes Music для замера (иначе — как в профиле)
 OFFSCREEN = "--offscreen" in ARGS
 SYNTH = "--synthetic" in ARGS
 ONLY = [a for a in ARGS if not a.startswith("--")]
@@ -78,6 +80,8 @@ else:
 settings.update(discord_rpc=False, media_session=False, close_to_tray=False, intro_enabled=False,
                 voice_cmd_always=False, volume=0, keybinds_global=False, onboarded=True, tray_hinted=True)
 settings.pop("win_size", None)
+if LAYOUT:
+    settings["ya_layout"] = LAYOUT
 (data / "settings.json").write_text(json.dumps(settings), "utf-8")
 Path.home = classmethod(lambda cls: home)
 for var, val in (("USERPROFILE", home), ("HOME", home), ("APPDATA", home / "roaming"), ("LOCALAPPDATA", home / "local")):

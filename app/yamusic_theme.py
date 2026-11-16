@@ -2930,8 +2930,12 @@ class YaShell(QWidget):
 
         self._layout_mode = win.settings.get("ya_layout", "new")
         self._build_nav_common(win)
+        self.ph = None                                         # раскладка Phantom Audio (ph_shell), если выбрана
         if self._layout_mode == "classic":
             self._layout_classic(win)
+        elif self._layout_mode == "phantom":
+            import ph_shell
+            self.ph = ph_shell.PhantomLayout(self, win)
         else:
             self._layout_new(win)
 
@@ -2990,6 +2994,9 @@ class YaShell(QWidget):
         self.refresh_sidebar()
         self.show_page(win.settings.get("ya_page", "foryou") if win.settings.get("ya_page") in
                        ("search", "wave", "foryou", "collection", "albums", "tierlist") else "foryou")
+        if self.ph is not None:                                # Phantom открывается главным экраном, без панели
+            self.ph.ready = True
+            self.ph.track_changed(self.current_track())
 
 
     def _layout_classic(self, win):
@@ -3595,6 +3602,11 @@ class YaShell(QWidget):
             raise
 
     def _show_page(self, key, remember=True):
+        ph_ = self.__dict__.get("ph")
+        if key == "lyrics" and ph_ is not None:                # Phantom: текст — в правой колонке («ТЕКСТ»)
+            ph_.set_mode("text")
+            ph_.close_overlay()
+            return
         if key == "lyrics":                                    # текст — только на весь экран (now_playing, «Текст»)
             np_ = self.__dict__.get("_now_playing")
             if np_ is not None and np_.is_open():
@@ -3613,11 +3625,12 @@ class YaShell(QWidget):
         np_ = self.__dict__.get("_now_playing")
         if np_ is not None and np_.isVisible():                # переход на страницу — экран «Сейчас играет» убирается
             np_.close_mode(instant=True)
-        try:                                                   # «Моя волна» — панели вокруг уходят в темноту
-            import wave_veil
-            wave_veil.install(self).set_on(key == "wave")
-        except Exception as e:                                 # noqa: BLE001
-            print("[veil]", e)
+        if ph_ is None:
+            try:                                               # «Моя волна» — панели вокруг уходят в темноту
+                import wave_veil
+                wave_veil.install(self).set_on(key == "wave")
+            except Exception as e:                             # noqa: BLE001
+                print("[veil]", e)
         if remember and self._cur_page != key:
             self._remember()
         self._cur_page = key
@@ -3671,7 +3684,12 @@ class YaShell(QWidget):
         kind = ("up" if key in sheets and old_key not in sheets else
                 "down" if old_key in sheets and key not in sheets else "slide")
         sw = getattr(self.win, "animate_switch", None)
-        sw(self.stack, self.pages[key], d, kind) if sw else self.stack.setCurrentWidget(self.pages[key])
+        if ph_ is not None and not ph_.overlay_open():         # панель только открывается — без «перелистывания»
+            self.stack.setCurrentWidget(self.pages[key])
+        else:
+            sw(self.stack, self.pages[key], d, kind) if sw else self.stack.setCurrentWidget(self.pages[key])
+        if ph_ is not None:
+            ph_.page_shown(key)
         self.btn_lyrics.setChecked(key == "lyrics")
         self.btn_queue.setStyleSheet(f"QPushButton{{background:{_rgba(YELLOW, 0.22)};border-radius:18px;}}" if key == "queue" else "")
 
@@ -3974,6 +3992,9 @@ class YaShell(QWidget):
         np_ = self.__dict__.get("_now_playing")
         if np_ is not None and np_.isVisible():
             np_.setGeometry(self.rect())
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None:
+            ph_.relayout()
         self._responsive()                                     # сразу — до первого кадра нового размера
         QTimer.singleShot(0, self._responsive)                 # и после раскладки (ширина плеера уже новая)
 
@@ -4104,10 +4125,16 @@ class YaShell(QWidget):
             if self._cur_page in ("collection",) and self._timer.interval():
                 self._rebuild(self._cur_page)
         # текст
-        if self._cur_page == "lyrics" or self.lyrics_full_open():
+        ph_ = self.ph
+        if self._cur_page == "lyrics" or self.lyrics_full_open() or (ph_ is not None and ph_.text_visible()):
             self._lyrics_tick(None, dur)           # позиция — плавная, см. ниже
+        if ph_ is not None:
+            ph_.tick(playing, pos, dur)
 
     def _on_track_changed(self, t):
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None and ph_.ready:
+            ph_.track_changed(t)
         if t is None:
             self.p_title.setText("—")
             self.p_artist.set_track(None)
@@ -5354,6 +5381,11 @@ class YaShell(QWidget):
         return bool(np_ is not None and np_.is_open())
 
     def open_now_playing(self, mode=None):
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None:                                    # Phantom: «Сейчас играет» и текст — правая колонка
+            ph_.set_mode("text" if mode == "lyrics" else "live")
+            ph_.close_overlay()
+            return
         np_ = self.__dict__.get("_now_playing")
         if np_ is None:
             from now_playing import NowPlaying
@@ -5366,6 +5398,11 @@ class YaShell(QWidget):
             np_.close_mode(instant=instant)
 
     def toggle_now_playing(self):
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None:
+            ph_.set_mode("text" if ph_.mode == "live" and not ph_.overlay_open() else "live")
+            ph_.close_overlay()
+            return
         if self.now_playing_open():
             self.close_now_playing()
         else:
@@ -6273,6 +6310,11 @@ class YaShell(QWidget):
 
     def toggle_lyrics(self):
         """Кнопка текста в нижнем плеере: текст на весь экран — тот же экран, что у обложки (now_playing)."""
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None:
+            ph_.set_mode("live" if ph_.mode == "text" and not ph_.overlay_open() else "text")
+            ph_.close_overlay()
+            return
         np_ = self.__dict__.get("_now_playing")
         if np_ is not None and np_.is_open():
             if np_.mode() == "lyrics":
@@ -6671,7 +6713,7 @@ class YaShell(QWidget):
             import ya_skin
             QTimer.singleShot(0, lambda: ya_skin.reskin(win))
         r1 = QHBoxLayout()
-        for key, text in (("new", "Новый вид"), ("classic", "Legacy — старый вид ECHOES")):
+        for key, text in (("phantom", "Phantom"), ("new", "Новый вид"), ("classic", "Legacy — старый вид ECHOES")):
             b = chip(text)
             b.setChecked(cur == key)
             b.clicked.connect(lambda _=False, key=key: apply(ya_layout=key) if key != cur else None)
@@ -6685,7 +6727,7 @@ class YaShell(QWidget):
         for key, text in (("right", "Справа"), ("left", "Слева")):
             b = chip(text)
             b.setChecked(side == key)
-            b.setEnabled(cur != "classic")
+            b.setEnabled(cur not in ("classic", "phantom"))
             b.clicked.connect(lambda _=False, key=key: apply(ya_side=key) if key != side else None)
             r2.addWidget(b)
         r2.addStretch(1)
@@ -7058,6 +7100,9 @@ class YaShell(QWidget):
             p.end()
 
     def shutdown(self):
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None:
+            ph_.shutdown()
         dec = getattr(self, "decor", None)
         if dec is not None:
             dec.shutdown()
