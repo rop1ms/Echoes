@@ -1,6 +1,6 @@
 {
  "channel": "beta",
- "commit": "4815baf372c7339ef7714d4de8aad7d7b5a63da0",
+ "commit": "3db4e0ee94fdfd3ed8ca34b04f988afce25c109d",
  "files": {
   "app/ach_icons.py": "47ffb85503510ffbb5e904657b59e7735900818821c459d56c3efdc7ab5a9d79",
   "app/ambience.py": "3155bd80ec6632ca38b8e941a98e0c90ff257230d3ba00138ddb575ac7859de3",
@@ -75,7 +75,7 @@
   "app/autostart.py": "d112a701306b3cd606127379e4054e63f8b758c6a2205983b7de66b4879a213b",
   "app/beat_analysis.py": "66a3dfacd1debb4027407ca438fa48f5cd8b2d80740da37e065d7b3fb1319cfe",
   "app/bg_remove.py": "d40f11b3619f9e32e63a9fd05f6ee8133593a4a6d7262462890aa9cbd2d4a0a8",
-  "app/bgproc.py": "1b172471817850e0c61e681aba67d8e8d7288637f340cee66624abe93a0dec6d",
+  "app/bgproc.py": "e582e2e26dc65b4af8ff9d6a2e28a52f47f4a450b1e510ae9d0a19bf4620be1d",
   "app/blur_fx.py": "dd4dd4616df217523d50ee4b447dee75cf1e23ff5724282284b408b565750b39",
   "app/boot_guard.py": "ce2778d6669bd3483038ea9afad13197c4f7a357b7b8a137bb1b021020a86161",
   "app/bug_report_ui.py": "cd411d5855416156295f247f30163bf7e6ec61e5e353a1a2d33c4e7428b8e942",
@@ -170,7 +170,7 @@
   "app/listening_dsp.py": "79110b28be4c3ba047868e394459d9b7340d054ce98808ee54cf8132cb3e5f2e",
   "app/listening_plus.py": "ae64b5bf62e25a570f68601b5eff09e0443d7eb162024c962ad107261336312b",
   "app/listening_tools.py": "d5317aeecba90e529ba88bb2f857fed3e29d460509d106a7e2d722e691974c61",
-  "app/loudness.py": "ef79c094a9bff7b4f5b79b9e44196d00702aa2e47b658cbe61107a696a9dfce4",
+  "app/loudness.py": "1a940773b6c8480ae483884124fb8be66af8a5e2d21411ae324a239d4797a3c1",
   "app/lyrics.py": "a311dc135d81268682a546c1c6c79ad0819abe3925aeed6e651b0ddee51136e9",
   "app/lyrics_editor.py": "69061d2f0e3c1eb46434edf304b12db442ac7a359e9bd8cc2964e48df8d18e0a",
   "app/lyrics_options.py": "db3519ce152471049d548555d05508f857aa6a39412a636443eaccc7a38deb8a",
@@ -178,7 +178,7 @@
   "app/lyrics_tags.py": "f28d11ded3d21b527a8838ca98ca3a40ae810aa4c81b97fec71dda17404ed238",
   "app/lyrics_verify.py": "6aa045940ec6131ff4e7ba596c827f586ec6725ca78a54db38d05838a1621b4e",
   "app/lyrics_view.py": "6296eb7b3a5c0a90e8fe7250f09e205194150e700f414580d59a23867d4d41ab",
-  "app/main.py": "b90278f6da94ede594b0a9ffffb614c6fcbff3e080b0c682be0fe572954dd30a",
+  "app/main.py": "362db0c623f851c873d6e5db4a2cf893ec8e9c39d5eb6120834f639fb7342337",
   "app/manual_search.py": "41b9855e249851ffdfc1961bd9935cbfad425dbafdb89894b70a08c10d05f8c7",
   "app/media_session.py": "46feb57c2c76c3ad3650b9f0a07fbf9f1cda572239cd21f16d8692e644166f36",
   "app/mem_trim.py": "f138f7d6b69c8f7eac30cccf8d5935a58eb815c549ca8b53a3554903b4e9cae8",
@@ -441,7 +441,7 @@
   "app/ui_rounding.py": "dfaad7ff031c00345c8b1900417d85e7d6fc17b0a7fb4a08dd2fc18f286bc413",
   "app/ui_scale.py": "cfe315b0f3ffae45fe9b8fe22ebac4cee61737c028425786de364ad73146278b",
   "app/ui_symbols.py": "76dcde27573b72683749f02d04cf53811439919c73202339c6f78fb66964bd58",
-  "app/version.txt": "84fc74241fe719298becaa9b46141d7e3778314f7694faf38251f19a7380c5db",
+  "app/version.txt": "224fcb6b4db4457be02f8a9508a9d962b1e4962092bbc21d692de4c69b656445",
   "app/video_safety.py": "092d8b03837bd7b95ff26ffd77591a0943882cd750ba40402fe8c8355604b5cb",
   "app/vinyl.py": "a91eb325a6dcc72f403cc9208a588f2a7906b9ce2c3b23df4e04f2844d9aff46",
   "app/visualizer.py": "dc4b9678dc60ceb394cb6b7fee308ae3b162d626c4660c08140ee8ac57d1b1ab",
@@ -498,8 +498,8 @@
   "setup/update.ps1": "7456e96ffc1c022aad1891b8758edbbfea57fb5a73da827dd9b1263229318fbf"
  },
  "launcher_sha256": "6021e815a11eed569860496df13a188ca6a1b1bb88750fcc067be5628725f032",
- "notes": "Echoes.exe с новым значком и именем Echoes в диспетчере задач. Обновляются ярлыки Windows. Быстрее поиск, переключение коллекции и фон Phantom; ограничена память кэшей, анализ длинного звука выполняется пакетами. Включены локальные улучшения Phantom и заставки.",
- "sig": "fFtaRCssgb0pT0bSARlNDf+z3SPUEvb2CB/iES+RCEfPTZgHxshm7clmJtZ5445BR6rfQE/q4/xlPO6eIxBqDg==",
- "ts": 1794920532,
- "version": "2026.11.17-4"
+ "notes": "Включает новое системное имя Echoes, значки Windows и оптимизации 2026.11.17-4. При выходе отменяется анализ громкости, а объекты Qt освобождаются до завершения Python.",
+ "sig": "nbcBfWaWf6yrNkVxS8eYISXLA49brUoZyQaVqgrYXELPqDFE8k6+ivnTt7gCDQt6RO3YEpp18Vqb2cwQvgfbAQ==",
+ "ts": 1794921487,
+ "version": "2026.11.17-5"
 }
