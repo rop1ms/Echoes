@@ -36,7 +36,7 @@ from pathlib import Path
 from frameclock import FrameTimer
 from PyQt6.QtCore import (QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer,
                           QVariantAnimation, pyqtSignal)
-from PyQt6.QtGui import (QColor, QCursor, QFontMetrics, QImage, QKeySequence, QLinearGradient, QPainter, QPen, QPixmap,
+from PyQt6.QtGui import (QColor, QCursor, QFontMetrics, QIcon, QImage, QKeySequence, QLinearGradient, QPainter, QPen, QPixmap,
                          QRadialGradient, QShortcut)
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -203,8 +203,17 @@ class PhTopBar(QWidget):
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(ph.px(16))
+        brand = QHBoxLayout()
+        brand.setSpacing(ph.px(4))
+        mark = QLabel()
+        mark.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        size = ph.px(20)
+        logo = Path(__file__).resolve().parent / "assets/logo/echoes_mark.png"
+        mark.setPixmap(QIcon(str(logo)).pixmap(QSize(size, size), self.devicePixelRatioF()))
+        brand.addWidget(mark)
         self.word = pw.label("ECHOES", "PhWordmark", font=ph.font(15, 700, -.01))
-        h.addWidget(self.word)
+        brand.addWidget(self.word)
+        h.addLayout(brand)
         col = QVBoxLayout()
         col.setSpacing(1)
         col.addStretch(1)
