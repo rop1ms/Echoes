@@ -53,6 +53,8 @@ class FollowTile(QWidget):
         un.setStyleSheet("QPushButton{border-radius:14px;padding:5px 14px;}")
         un.clicked.connect(lambda: AF.set_follow(page.shell.win, name, False))
         v.addWidget(un, 0, Qt.AlignmentFlag.AlignHCenter)
+        # высота плитки задана жёстко: сетка не может её сжать, и круг не наезжает на имя и кнопку
+        self.setFixedHeight(self.card.height() + v.spacing() + max(30, un.sizeHint().height()) + 4)
 
 
 class FollowsPage(QWidget):

@@ -105,15 +105,20 @@ class _NcFilter(QAbstractNativeEventFilter):
                 # развёрнутое окно Windows может вынести за край монитора на толщину рамки — подрезаем
                 # клиентскую часть по рабочей области монитора (без панели задач)
                 r = self.RECT.from_address(int(msg.lParam))       # NCCALCSIZE_PARAMS.rgrc[0]
-                work = self._work_area()
+                # монитор — по предлагаемому прямоугольнику, а не по нынешнему окну: при возврате из панели задач
+                # окно ещё «свёрнуто» (−32000), и обрезка по рабочей области давала пустую клиентскую часть —
+                # развёрнутое окно оставалось чёрным с белой полоской сверху
+                work = self._work_area(r)
                 if work is not None:
-                    r.left, r.top = max(r.left, work.left), max(r.top, work.top)
-                    r.right, r.bottom = min(r.right, work.right), min(r.bottom, work.bottom)
+                    left, top = max(r.left, work.left), max(r.top, work.top)
+                    right, bottom = min(r.right, work.right), min(r.bottom, work.bottom)
+                    if right - left > 0 and bottom - top > 0:
+                        r.left, r.top, r.right, r.bottom = left, top, right, bottom
             return True, 0                                         # без системной рамки и заголовка
         except Exception:                                          # noqa: BLE001
             return False, 0
 
-    def _work_area(self):
+    def _work_area(self, rect=None):
         c = self._c
 
         class MONITORINFO(c.Structure):
@@ -121,7 +126,13 @@ class _NcFilter(QAbstractNativeEventFilter):
         try:
             self._u.MonitorFromWindow.restype = c.c_void_p
             self._u.MonitorFromWindow.argtypes = [self._w.HWND, c.c_ulong]
-            mon = self._u.MonitorFromWindow(self.hwnd, 2)          # MONITOR_DEFAULTTONEAREST
+            if rect is not None:
+                self._u.MonitorFromRect.restype = c.c_void_p
+                self._u.MonitorFromRect.argtypes = [c.c_void_p, c.c_ulong]
+                probe = self.RECT(rect.left, rect.top, rect.right, rect.bottom)
+                mon = self._u.MonitorFromRect(c.byref(probe), 2)   # MONITOR_DEFAULTTONEAREST
+            else:
+                mon = self._u.MonitorFromWindow(self.hwnd, 2)      # MONITOR_DEFAULTTONEAREST
             mi = MONITORINFO()
             mi.cbSize = c.sizeof(MONITORINFO)
             self._u.GetMonitorInfoW.argtypes = [c.c_void_p, c.c_void_p]

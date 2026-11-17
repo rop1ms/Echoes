@@ -96,7 +96,13 @@ def _save(d: dict):
     tmp = INDEX.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), "utf-8")
     os.replace(tmp, INDEX)
-    _cache["sig"] = None
+    # только что записанное и есть индекс: не перечитывать и не разбирать файл заново при следующем lookup()
+    # (на каждой смене трека это были ~10 мс в потоке окна)
+    try:
+        st = INDEX.stat()
+        _cache["d"], _cache["sig"] = dict(d), (st.st_mtime_ns, st.st_size)
+    except OSError:
+        _cache["sig"] = None
 
 
 def lookup(t: dict) -> dict | None:

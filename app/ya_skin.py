@@ -58,6 +58,24 @@ PRESETS = {
     "Закат": {"accent": "#ff9a3c", "on_accent": "#1a0b00", "bg": "#0a0604", "panel": "#140d09", "panel2": "#1d130d",
               "card": "#2b1c13"},
 }
+# Вид Phantom (ya_layout = "phantom"): свой монохромный скин — включается сам вместе с видом; свой скин
+# пользователя при этом не теряется (настройка ya_skin не меняется) и вернётся с прежним видом.
+PHANTOM = {"accent": "#ffffff", "on_accent": "#050505", "bg": "#050505", "panel": "#0a0a0a", "panel2": "#0f0f0f",
+           "card": "#161616", "text": "#f5f5f5", "muted": "#a3a3a3", "font": "Inter PA", "size": 13, "radius": 10,
+           "buttons": "glass", "bold": True, "title_font": "", "density": "normal", "album_round": 10,
+           "artist_round": True, "panel_radius": 26}
+PHANTOM_ON = False
+
+
+def for_settings(settings) -> dict | None:
+    """Скин, который действует при этих настройках: при виде Phantom — PHANTOM (с пометкой), иначе свой."""
+    if not isinstance(settings, dict):
+        return None
+    if (settings.get("ya_layout") or "phantom") == "phantom":    # Phantom — вид по умолчанию
+        return dict(PHANTOM, _phantom=True)
+    return settings.get("ya_skin")
+
+
 BUTTON_STYLES = (("glass", "Стекло"), ("flat", "Плоские"), ("outline", "Контур"), ("soft", "Мягкие"))
 COLOR_ROWS = (("accent", "Акцент", "кнопки, выделение, активная вкладка"),
               ("on_accent", "Текст на акценте", "надписи на жёлтых (акцентных) кнопках"),
@@ -154,6 +172,14 @@ _HOOK = []
 
 def apply(skin) -> dict:
     """Подменить цвета и шрифт темы Echoes Music (до сборки интерфейса)."""
+    global PHANTOM_ON
+    PHANTOM_ON = bool(isinstance(skin, dict) and skin.get("_phantom"))
+    if PHANTOM_ON:
+        try:
+            import ph_style                                    # Inter — до сборки интерфейса
+            ph_style.load_fonts()
+        except Exception as e:                                 # noqa: BLE001
+            print("[skin] phantom fonts:", e)
     s = normalize(skin)
     import yamusic_theme as Y
     try:
@@ -195,6 +221,10 @@ def apply(skin) -> dict:
             except Exception:                                  # noqa: BLE001
                 pass
     Y.FAMILIES[:] = ([s["font"]] if s["font"] else []) + [f for f in _ORIG["FAMILIES"] if f != s["font"]]
+    if PHANTOM_ON:                                             # Inter разбит по алфавитам — все части подряд
+        import ph_style
+        Y.FAMILIES[:] = [f for f in ph_style.FAMILIES if f != "ECHOES Symbols"] + \
+            [f for f in _ORIG["FAMILIES"] if f not in ph_style.FAMILIES]
     Y.TITLE_FAMILIES[:] = list(TITLE_FAMILY.get(s["title_font"], []))  # заголовки, логотип
     Y.DENSITY = next(k for key, _n, k in DENSITIES if key == s["density"])
     Y.CARD_RADIUS = s["album_round"]
@@ -283,6 +313,12 @@ def overrides_qss(s=None) -> str:
     if s["title_font"]:
         fams = ",".join(f'"{f}"' for f in TITLE_FAMILY[s["title_font"]])
         out.append(f"QLabel#YaH1, QLabel#YaH2, QLabel#YaHero {{ font-family:{fams}; }}")
+    if PHANTOM_ON:                                             # вид Phantom — его QSS последним, поверх всего
+        try:
+            import ph_style
+            out.append(ph_style.app_qss())
+        except Exception as e:                                 # noqa: BLE001
+            print("[skin] phantom qss:", e)
     return "\n".join(out)
 
 
@@ -704,7 +740,7 @@ class SkinEditor(QDialog):
 
 def reskin(win):
     """Применить скин к открытому плееру: пересобрать интерфейс Echoes Music (сеть и музыка не прерываются)."""
-    apply(win.settings.get("ya_skin"))
+    apply(for_settings(win.settings))
     if not getattr(win, "_ya_on", False):
         return
     page = getattr(getattr(win, "_ya", None), "_cur_page", None)

@@ -8,12 +8,17 @@ ShadowHost — в своём paintEvent, до детей (картинки из 
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QVariantAnimation, pyqtSignal
+from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PyQt6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy,
                              QWidget)
 
 import ph_style as ph
+
+
+class PhButton(QPushButton):
+    """Кнопка Phantom. Свой класс нужен, чтобы кэш отрисовки кнопок Echoes (paint_cache, только точный
+    QPushButton) её не трогал: он рисует подпись шрифтом приложения, и мелкие подписи Phantom вылезали за края."""
 
 
 class PhSurface(QFrame):
@@ -115,7 +120,7 @@ def icon_button(name: str, kind: str = "ghost", size: str = "md", icon_px: int |
                 active=ph.TEXT_PRIMARY) -> QPushButton:
     """Круглая кнопка-иконка Phantom: kind ghost | surface | solid, size sm(28) | top(30) | md(34) | lg(40) |
     play(44, только solid). Иконка 14/16/18 px по размеру."""
-    b = QPushButton(parent)
+    b = PhButton(parent)
     b.setObjectName({"ghost": "PhIcon", "surface": "PhIconSurface", "solid": "PhIconSolid"}[kind])
     if size != "md":
         b.setProperty("phSize", size)
@@ -135,7 +140,7 @@ def icon_button(name: str, kind: str = "ghost", size: str = "md", icon_px: int |
 
 def text_button(text: str, kind: str = "secondary", icon: str | None = None, parent=None) -> QPushButton:
     """Кнопка с текстом: primary (белая) | secondary (стекло) | ghost | danger | small."""
-    b = QPushButton(text, parent)
+    b = PhButton(text, parent)
     b.setObjectName({"primary": "PhPrimary", "secondary": "PhSecondary", "ghost": "PhGhost",
                      "danger": "PhDanger", "small": "PhSmall"}[kind])
     ph.set_font(b, ph.font(ph.TEXT_XS if kind == "small" else ph.TEXT_SM, 550))
@@ -150,7 +155,7 @@ def text_button(text: str, kind: str = "secondary", icon: str | None = None, par
 
 def chip(text: str, checked: bool = False, parent=None) -> QPushButton:
     """Пилюля-фильтр (Все файлы · Избранное · Недавно прослушано)."""
-    b = QPushButton(text, parent)
+    b = PhButton(text, parent)
     b.setObjectName("PhChip")
     ph.set_font(b, ph.font(ph.TEXT_XS, 500))
     b.setCheckable(True)
@@ -204,7 +209,7 @@ class PhSegments(QFrame):
         self.buttons: dict[str, QPushButton] = {}
         for it in items:
             key, text = it[0], it[1]
-            b = QPushButton(text)
+            b = PhButton(text)
             b.setObjectName("PhSegment")
             ph.set_font(b, seg_font)
             b.setCheckable(True)
@@ -219,8 +224,89 @@ class PhSegments(QFrame):
             self.buttons[key] = b
             lay.addWidget(b, 1 if stretch else 0)
             b.clicked.connect(lambda _=False, k=key: self.changed.emit(k))
+        self._full = {k: b.text() for k, b in self.buttons.items()}
+        self._icons = bool(items) and all(len(it) > 2 and it[2] for it in items)
+        self._fm = QFontMetrics(seg_font)
         if items:
             self.buttons[items[0][0]].setChecked(True)
+        self.group.buttonToggled.connect(lambda *_: self._fit())
+        # плашка выбранной вкладки едет к новой (как у Phantom), а не прыгает
+        self._ind = None
+        self._ind_from = self._ind_to = None
+        self._ind_anim = QVariantAnimation(self)
+        self._ind_anim.setStartValue(0.0)
+        self._ind_anim.setEndValue(1.0)
+        self._ind_anim.setEasingCurve(ph.ease_out())
+        self._ind_anim.valueChanged.connect(self._ind_step)
+        self.group.buttonToggled.connect(self._ind_go)
+
+    def _fit(self):
+        """Узко: у невыбранных вкладок остаются только значки (подпись — в подсказке), чтобы слова
+        не обрезались посередине; совсем узко — и у выбранной."""
+        if not self._icons or not self.buttons:
+            return
+        n = len(self.buttons)
+        avail = self.width() - 6 - 2 * (n - 1)
+        pad = ph.px(14) + ph.px(26)                     # значок, отступы кнопки
+        need = sum(self._fm.horizontalAdvance(t) + pad for t in self._full.values())
+        cur = self.current()
+        keep_cur = (avail - (n - 1) * (ph.px(14) + ph.px(18))
+                    >= self._fm.horizontalAdvance(self._full.get(cur, "")) + pad)
+        for k, b in self.buttons.items():
+            full = self._full[k]
+            show = need <= avail or (k == cur and keep_cur)
+            txt = full if show else ""
+            if b.text() != txt:
+                b.setText(txt)
+            b.setToolTip("" if show else full.strip())
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+        self._ind_anim.stop()
+        self._ind = None                                       # после раскладки — сразу на место
+
+    def _target(self):
+        b = self.group.checkedButton()
+        return QRectF(b.geometry()) if b is not None and b.isVisible() else None
+
+    def _ind_go(self, btn, on):
+        if not on:
+            return
+        to = QRectF(btn.geometry())
+        d = ph.duration(ph.DUR_BASE)
+        if self._ind is None or d <= 0 or not self.isVisible():
+            self._ind = None
+            self.update()
+            return
+        self._ind_from, self._ind_to = QRectF(self._ind), to
+        self._ind_anim.stop()
+        self._ind_anim.setDuration(d)
+        self._ind_anim.start()
+
+    def _ind_step(self, v):
+        a, b = self._ind_from, self._ind_to
+        if a is None or b is None:
+            return
+        k = float(v)
+        self._ind = QRectF(a.x() + (b.x() - a.x()) * k, a.y() + (b.y() - a.y()) * k,
+                           a.width() + (b.width() - a.width()) * k, a.height() + (b.height() - a.height()) * k)
+        self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._ind is None or not self._ind_anim.state() == QVariantAnimation.State.Running:
+            self._ind = self._target()
+        r = self._ind
+        if r is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(ph.qcolor(ph.LINE_2), 1.0))
+        p.setBrush(ph.white(.13))
+        rad = r.height() / 2
+        p.drawRoundedRect(r.adjusted(.5, .5, -.5, -.5), rad, rad)
+        p.end()
 
     def current(self) -> str:
         for k, b in self.buttons.items():

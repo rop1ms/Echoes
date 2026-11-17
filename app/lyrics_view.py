@@ -371,6 +371,9 @@ class LyricsScrollPanel(QWidget):
         if size > 0:
             return size if self._timed else max(8, int(size * 0.75))
         w = max(200, self.width())
+        if self._st.get("phantom"):                  # Phantom: крупно, как его LYRICS (≈52 px при колонке 790)
+            k = max(0.5, min(2.0, float(self._st.get("size_scale", 1.0))))
+            return int(max(26, min(60, w * 0.066)) * k) if self._timed else int(max(18, min(34, w * 0.04)) * k)
         return int(max(20, min(36, w * 0.042))) if self._timed else int(max(17, min(26, w * 0.032)))
 
     def _shown(self, t: str) -> str:
@@ -382,7 +385,13 @@ class LyricsScrollPanel(QWidget):
         f = QFont()
         f.setFamilies(([self._st_family] if self._st_family else []) + self.FAMILIES)
         f.setPixelSize(px)
-        if self._st:
+        self._ph_cache = {}
+        if self._st.get("phantom"):                  # Phantom: Inter 700, плотная разрядка −.035em
+            import ph_style
+            f.setFamilies(ph_style.FAMILIES)
+            f.setWeight(QFont.Weight(int(self._st.get("weight", 700))))
+            f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -0.035 * px)
+        elif self._st:
             f.setWeight(QFont.Weight(int(self._st.get("weight", 700))))
             f.setItalic(bool(self._st.get("italic")))
             f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, float(self._st.get("letter", 0.0)))
@@ -423,6 +432,8 @@ class LyricsScrollPanel(QWidget):
         return float(self._st.get("active_scale", 1.24 if self.liquid else 1.0))
 
     def _margin(self) -> int:
+        if self._st.get("phantom"):                  # Phantom: текст от края колонки
+            return 4
         if self._st.get("panel"):
             return max(20, int(self.width() * 0.06))
         return max(24, int(self.width() * 0.07))
@@ -571,6 +582,12 @@ class LyricsScrollPanel(QWidget):
         # строки меняются раз в несколько секунд; панель на весь экран стоила десятки % процессора)
         if busy or ((self._st.get("karaoke") or self.liquid) and self._active_idx >= 0):
             self.update()
+        elif self._st.get("phantom") and self._st.get("words", True) and 0 <= self._active_idx < len(self._layout) \
+                and self._timed:
+            # Phantom: слова текущей строки заливаются каждый кадр — перерисовать только её полосу
+            y, h = self._layout[self._active_idx]
+            top = int(y - self._scroll)
+            self.update(QRect(0, top - 6, self.width(), h + 16))
         elif self._dots is not None:                 # дышат только точки — перерисовать их полосу
             px = self._font_px()
             yc = int(self._dots[0] - self._scroll)
@@ -747,18 +764,30 @@ class LyricsScrollPanel(QWidget):
                 # текущая строка чуть крупнее — масштаб от точки выравнивания строки
                 p.save()
                 k = min(1.0, (a - 0.4) / 0.6) if a > 0.4 else 0.0
-                sc = 1.0 + (0.035 + (grow - 1.0)) * k
+                sc = 1.0 if st.get("phantom") else 1.0 + (0.035 + (grow - 1.0)) * k   # Phantom — без роста
                 ax = {Qt.AlignmentFlag.AlignLeft: m, Qt.AlignmentFlag.AlignRight: m + inner}.get(
                     align, m + inner / 2)
                 p.translate(ax, top + h / 2)
                 p.scale(sc, sc)
                 p.translate(-ax, -(top + h / 2))
                 rect = QRect(m, int(top), inner, h + 4)
-                if self.liquid and self._ms[i] >= 0 and not (getattr(self, '_translation_below', False)
-                                                              and '\n' in text):
+                plain = not (getattr(self, '_translation_below', False) and '\n' in text)
+                if st.get("phantom") and st.get("words", True) and self._ms[i] >= 0 and plain:
+                    self._draw_words_ph(p, rect, text, c, dim_col, i, a)
+                elif self.liquid and self._ms[i] >= 0 and plain:
                     self._draw_liquid(p, rect, text, c, dim_col, i, a)
                 else:
                     self._draw_line(p, rect, flags, text, c, glow * k, shadow, i)
+                p.restore()
+            elif st.get("phantom") and st.get("blur_inactive", True) and self._timed and \
+                    not (getattr(self, '_translation_below', False) and '\n' in text):
+                # Phantom: неактивные строки размыты — тем сильнее, чем дальше от текущей. Размытая строка —
+                # готовая картинка из кэша: в кадре только drawImage с прозрачностью
+                d = abs(i - self._active_idx) if self._active_idx >= 0 else 3
+                img, pad = self._ph_line(text, inner, h + 4, flags, c, min(7.0, 1.2 + 1.3 * d))
+                p.save()
+                p.setOpacity(c.alphaF())
+                p.drawImage(QPointF(m - pad, top - pad), img)
                 p.restore()
             else:
                 self._draw_line(p, QRect(m, int(top), inner, h + 4), flags, text, c, 0.0, shadow, -1)
@@ -878,6 +907,36 @@ class LyricsScrollPanel(QWidget):
         self._lq_cache[key] = lay
         return lay
 
+    def _ph_line(self, text, w, h, flags, color, sigma):
+        """Строка, размытая на sigma (Phantom blurInactive), — QImage с полями pad; кэш до смены раскладки."""
+        sig = round(sigma * 2) / 2
+        key = (text, w, h, flags, color.rgb(), sig)
+        cache = self.__dict__.setdefault("_ph_cache", {})
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+        import blur_fx
+        from PyQt6.QtGui import QImage
+        pad = int(sig * 3) + 2
+        dpr = self.devicePixelRatioF() or 1.0
+        img = QImage(int((w + 2 * pad) * dpr), int((h + 2 * pad) * dpr), QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)
+        img.fill(Qt.GlobalColor.transparent)
+        q = QPainter(img)
+        q.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        q.setFont(self._font)
+        col = QColor(color)
+        col.setAlphaF(1.0)
+        q.setPen(col)
+        q.drawText(QRect(pad, pad, w, h), flags, text)
+        q.end()
+        out = blur_fx.blur_image(img, sig * dpr) if sig > .3 else img
+        out.setDevicePixelRatio(dpr)
+        if len(cache) > 96:
+            cache.clear()
+        cache[key] = (out, pad)
+        return out, pad
+
     def _native_text(self):
         """Кэш раскладок и глифов на C++ (echoes_ui.dll) или None — тогда drawText, как раньше."""
         tc = self.__dict__.get("_ntext", False)
@@ -894,6 +953,43 @@ class LyricsScrollPanel(QWidget):
             return
         import i18n
         tc.draw_wrapped(p, rect, flags, i18n.tr(text))
+
+    def _draw_words_ph(self, p, rect, text, col, dim_col, i, alpha):
+        """Phantom: текущая строка загорается ПО СЛОВАМ. Время слов — тот же расчёт, что у «жидкого» текста
+        (_liquid_layout: пословные метки LRC, иначе оценка word_sync, уточнённая по звуку трека); раскладка —
+        с переносами, поэтому у строки в два ряда сначала загорается первый ряд, потом второй. Слово
+        заливается слева направо за своё время, граница — мягкая; буквы не подрастают."""
+        chars, _h, _line_h = self._liquid_layout(i, text, rect.width())
+        now = self._now_ms()
+        words: dict = {}                                       # № слова → [x0, x1, база, t0, t1, текст]
+        for ch, cx, base, cw, wi, t0, t1 in chars:
+            w = words.get(wi)
+            if w is None:
+                words[wi] = [cx, cx + cw, base, t0, t1, ch]
+            else:
+                w[1], w[4] = cx + cw, t1
+                w[5] += ch
+        lit = QColor(col)
+        lit.setAlphaF(min(1.0, alpha))
+        dim = QColor(dim_col)
+        dim.setAlphaF(min(1.0, alpha) * 0.34)
+        p.setFont(self._font)
+        ox, oy = rect.x(), rect.y()
+        for x0, x1, base, t0, t1, word in words.values():
+            f = 0.0 if now <= t0 else 1.0 if now >= t1 else (now - t0) / max(1.0, t1 - t0)
+            pos = QPointF(ox + x0, oy + base)
+            if f <= 0.0 or f >= 1.0:
+                p.setPen(lit if f >= 1.0 else dim)
+                p.drawText(pos, word)
+                continue
+            ww = max(1.0, x1 - x0)
+            soft = max(3.0, ww * 0.18)
+            cut = ox + x0 + ww * f
+            grad = QLinearGradient(cut - soft, 0, cut + soft, 0)
+            grad.setColorAt(0.0, lit)
+            grad.setColorAt(1.0, dim)
+            p.setPen(QPen(QBrush(grad), 1))
+            p.drawText(pos, word)
 
     def _draw_liquid(self, p, rect, text, col, dim_col, i, alpha):
         """Текущая строка: серый текст заливается белым слева направо ровно за время строки; буква,

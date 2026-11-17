@@ -28,6 +28,9 @@ _orig = {}                    # оригинальные функции Qt
 _layers: list = []            # открытые слои (стек)
 
 _SKIP = (QFileDialog, QMessageBox, QColorDialog, QFontDialog)
+# Хозяин встраивания: fn(content) → виджет, внутри которого показать окно страницей (вид Phantom: открытые
+# настройки), или None — показать как обычно, слоем поверх окна. Ставит ph_shell, снимает при выходе из вида.
+EMBED = None
 
 
 def _win_of(widget):
@@ -94,7 +97,14 @@ class Layer(QWidget):
     """Слой поверх главного окна с карточкой по центру."""
 
     def __init__(self, win, content: QWidget, title: str = "", modal=False):
-        super().__init__(win)
+        host = None
+        if EMBED is not None:
+            try:
+                host = EMBED(content)
+            except Exception as e:                  # noqa: BLE001
+                print("[inapp] embed:", e)
+        self.host = host                            # страница внутри панели (вид Phantom) или None — слой поверх
+        super().__init__(host or win)
         self.win, self.content, self.modal = win, content, modal
         self._orig_parent = content.parentWidget()
         self._orig_flags = content.windowFlags()
@@ -107,11 +117,13 @@ class Layer(QWidget):
         self._orphan.setInterval(1000)
         self._orphan.timeout.connect(self._check_orphan)
         self._orphan.start()
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, host is None)
         self._backdrop = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         try:                                        # карточка — «жидкое стекло», как главный экран и плеер
+            if host is not None:
+                raise RuntimeError("страница внутри панели — без своей карточки")
             from echo_glass import GlassFrame
             self.card = GlassFrame(self, 18)
         except Exception:                           # noqa: BLE001
@@ -146,6 +158,24 @@ class Layer(QWidget):
         self.btn_close.setToolTip("Закрыть")
         self.btn_close.clicked.connect(self.request_close)
         head.addWidget(self.btn_close)
+        if host is not None:                        # страница: «‹ Назад» слева, без «развернуть» и «×»
+            self.btn_maximize.hide()
+            self.btn_close.hide()
+            self.btn_back = QPushButton("  Назад")
+            self.btn_back.setObjectName("InAppBack")
+            self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.btn_back.setToolTip("Вернуться к настройкам")
+            try:
+                import ph_style
+                self.btn_back.setIcon(ph_style.icon("chevron-left", 14, ph_style.TEXT_PRIMARY))
+                ph_style.set_font(self.btn_back, ph_style.font(ph_style.TEXT_SM, 550))
+                ph_style.set_font(self.title, ph_style.font(ph_style.TEXT_LG, 650, -.015))
+            except Exception:                       # noqa: BLE001
+                pass
+            self.btn_back.clicked.connect(self.request_close)
+            head.insertWidget(0, self.btn_back)
+            head.insertSpacing(1, 6)
+            v.setContentsMargins(0, 0, 0, 0)
         v.addLayout(head)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -159,12 +189,14 @@ class Layer(QWidget):
         self.scroll.setWidget(content)
         content.show()
         win.installEventFilter(self)
+        if host is not None:
+            host.installEventFilter(self)
         content.installEventFilter(self)
         _layers.append(self)
         self._relayout()
         # The blocked page behind the dialog need not be composited on every
         # mouse move. Keep its appearance while moving/resizing the glass card.
-        self._backdrop = win.grab(self._area())
+        self._backdrop = win.grab(self._area()) if host is None else None
         self.show()
         self.raise_()
         QTimer.singleShot(0, lambda: (content.focusWidget() or content).setFocus())
@@ -172,6 +204,8 @@ class Layer(QWidget):
     # ── размеры ── #
 
     def _area(self):
+        if self.host is not None:
+            return self.host.rect()
         cw = self.win.centralWidget()
         r = cw.geometry() if cw is not None else self.win.rect()
         return r
@@ -179,6 +213,10 @@ class Layer(QWidget):
     def _relayout(self):
         r = self._area()
         self.setGeometry(r)
+        if self.host is not None:                   # страница — во всю панель
+            self.card.setGeometry(self.rect())
+            self.grip.hide()
+            return
         if self._maximized:
             self.card.setGeometry(self.rect().adjusted(6, 6, -6, -6))
             self._place_grip()
@@ -215,11 +253,11 @@ class Layer(QWidget):
 
     def eventFilter(self, obj, ev):
         t = ev.type()
-        if obj is self.win and t in (QEvent.Type.Resize, QEvent.Type.Move):
+        if (obj is self.win or (self.host is not None and obj is self.host)) and                 t in (QEvent.Type.Resize, QEvent.Type.Move):
             self._relayout()
         elif obj is self.card and t == QEvent.Type.Resize:
             self._place_grip()
-        elif obj is self.title:
+        elif obj is self.title and self.host is None:
             if t == QEvent.Type.MouseButtonDblClick and ev.button() == Qt.MouseButton.LeftButton:
                 self.toggle_maximized()
                 return True
@@ -242,6 +280,8 @@ class Layer(QWidget):
     # ── ввод/рисование ── #
 
     def paintEvent(self, _):
+        if self.host is not None:                   # страница внутри стеклянной панели — фон у панели
+            return
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(12, 13, 16))
         if self._backdrop is not None:
@@ -290,6 +330,8 @@ class Layer(QWidget):
         try:
             self.win.removeEventFilter(self)
             self.content.removeEventFilter(self)
+            if self.host is not None:
+                self.host.removeEventFilter(self)
         except RuntimeError:
             pass
         try:
@@ -347,7 +389,10 @@ def _exec_inapp(self):
     L.closed_cb = loop.quit
     self.finished.connect(lambda *_: QTimer.singleShot(0, L._finish))     # после выхода из done()
     loop.exec()
-    return QDialog.result(self)                            # метод Qt: у некоторых диалогов поле result — их ответ
+    try:
+        return QDialog.result(self)                        # метод Qt: у некоторых диалогов поле result — их ответ
+    except RuntimeError:                                   # диалог сам удалился по закрытию (finished → deleteLater)
+        return 0
 
 
 # ── вопросы и ввод текста ── #

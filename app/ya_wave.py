@@ -86,7 +86,92 @@ MOOD_COLORS = {
 }
 
 
+_LIVE = __import__("weakref").WeakSet()                       # волны на экране — перекрасить под новый фон
+
+
+def retint():
+    """Оттенок фона сменился (ph_style.set_tint) — перекрасить туманности в виде Phantom."""
+    if not _phantom():
+        return
+    for w in list(_LIVE):
+        try:
+            if hasattr(w, "set_scheme"):
+                w.set_scheme(scheme_for("my"))
+            w.update()
+        except RuntimeError:
+            pass
+
+
+def _ph_backdrop(widget, p) -> bool:
+    """Вид Phantom: нарисовать под виджетом фон за панелью (ph_shell.paint_backdrop); иначе False."""
+    if not _phantom():
+        return False
+    try:
+        import ph_shell
+        return ph_shell.paint_backdrop(widget, p)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def _screen_backdrop(widget, W, H, dpr):
+    """Phantom + туманность на GPU: фон за панелью как накладка, которая смешивается с туманностью почти как
+    «экран» (премультипл. пиксель rgb=фон, альфа=max(rgb): итог = фон + туманность·(1−альфа)). Свет туманности
+    ложится на размытую картинку, а не на чёрное. None — не Phantom / панель не открыта."""
+    if not _phantom():
+        return None
+    w, h = max(1, int(W * dpr)), max(1, int(H * dpr))
+    img = QImage(w, h, QImage.Format.Format_RGB32)
+    img.setDevicePixelRatio(dpr)
+    img.fill(QColor(0, 0, 0))
+    q = QPainter(img)
+    try:
+        ok = _ph_backdrop(widget, q)
+    finally:
+        q.end()
+    if not ok:
+        return None
+    a = np.frombuffer(img.constBits().asstring(img.sizeInBytes()), np.uint8).reshape(h, img.bytesPerLine() // 4, 4)
+    a = a[:, :w].copy()
+    a[..., 3] = a[..., :3].max(axis=2)
+    out = QImage(a.data, w, h, w * 4, QImage.Format.Format_ARGB32_Premultiplied).copy()
+    out.setDevicePixelRatio(dpr)
+    return out
+
+
+def _backdrop_key(widget):
+    if not _phantom():
+        return None
+    try:
+        import ph_shell
+        return ph_shell.backdrop_key(widget)
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _phantom() -> bool:
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+# вид Phantom — монохром с оттенком картинки фона (ph_style.tone); цветные схемы остаются для прежнего вида
+
+
+def _mono_palette():
+    import ph_style
+    return tuple(ph_style.tone(v, k=.38).name() for v in (255, 154, 214))
+
+
+def _mono_scheme():
+    import ph_style
+    return ph_style.mono_scheme()
+
+
 def palette_for(kind, arg=None):
+    if _phantom():
+        return _mono_palette()
     if kind in MOOD_COLORS:
         return MOOD_COLORS[kind]
     if kind == "mood" and arg in MOOD_COLORS:
@@ -382,6 +467,8 @@ def scheme_from_hue(h: float, s: float = 0.9) -> tuple:
 
 
 def scheme_for(kind, arg=None) -> tuple:
+    if _phantom():
+        return _mono_scheme()
     if kind in SCHEMES:
         return SCHEMES[kind]
     if kind == "mood" and arg in SCHEMES:
@@ -392,6 +479,8 @@ def scheme_for(kind, arg=None) -> tuple:
 
 def cover_scheme(pm) -> tuple | None:
     """Схема туманности из главного цвета обложки (None — серая обложка)."""
+    if _phantom():
+        return _mono_scheme()
     pal = cover_palette(pm)
     if pal is None:
         return None
@@ -415,7 +504,7 @@ class NebulaField:
               (0.20, 0.06, 0.24, 0, 0.55, 0.20, 0.41, 0.37, 3.3)]
 
     def __init__(self):
-        self.cols = np.array([_hx(c) for c in SCHEMES["my"]], np.float32)
+        self.cols = np.array([_hx(c) for c in scheme_for("my")], np.float32)
         self._from = self._to = None
         self._mix = 1.0
         self.tt = 0.0
@@ -1074,7 +1163,8 @@ class WaveWheel(QWidget):
         if self._clear_from is not None:             # под нами туманность на GPU: чёрное — только слева от неё
             p.fillRect(QRect(0, 0, int(self._clear_from), self.height()), QColor(0, 0, 0))
         else:
-            p.fillRect(self.rect(), QColor(0, 0, 0))
+            if not _ph_backdrop(self, p):
+                p.fillRect(self.rect(), QColor(0, 0, 0))
             if self._backdrop is not None:
                 self._backdrop(p)
         if self._timer.isActive():                   # круг крутится — пункты рисуются прямо в кадр
@@ -1349,6 +1439,7 @@ class WavePage(QWidget):
         self.setMouseTracking(True)
         self.neb = NebulaField()
         self.glow = self.neb                     # старое имя (тесты, тема)
+        _LIVE.add(self)
         self._worker = _GlowWorker(self.neb)
         self._worker.start()
         self._title_pm = None
@@ -1397,8 +1488,8 @@ class WavePage(QWidget):
         self.hint = _ShadowLabel("", self)
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.hint.setStyleSheet("color:rgba(255,255,255,0.82);font-size:12px;font-weight:600;background:transparent;")
-        self._scheme = SCHEMES["my"]
-        self._mood_scheme = SCHEMES["my"]
+        self._scheme = scheme_for("my")
+        self._mood_scheme = scheme_for("my")
         self._cover_scheme = None
         self._style_chips()
 
@@ -1456,6 +1547,9 @@ class WavePage(QWidget):
     def _gl_mask(self):
         if self._gl is None:
             return
+        if _phantom():                                 # фон за панелью — в накладке: скруглять нечего, без уголков
+            self._gl.widget.clearMask()
+            return
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), 16, 16)
         self._gl.widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
@@ -1466,7 +1560,7 @@ class WavePage(QWidget):
         dpr = self.devicePixelRatioF()
         if self._title_pm is None:
             self._title_pm = self._make_title(W)
-        key = (W, H, dpr, id(self._title_pm))
+        key = (W, H, dpr, id(self._title_pm), _backdrop_key(self))
         if key == self._overlay_k:
             return
         self._overlay_k = key
@@ -1474,6 +1568,9 @@ class WavePage(QWidget):
         pm.setDevicePixelRatio(dpr)
         pm.fill(Qt.GlobalColor.transparent)
         p = QPainter(pm)
+        bd = _screen_backdrop(self, W, H, dpr)          # Phantom: туманность светит поверх размытой картинки
+        if bd is not None:
+            p.drawImage(0, 0, bd)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         self._paint_decor(p, W, H, soft=True)
@@ -1588,7 +1685,9 @@ class WavePage(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         W, H = self.width(), self.height()
-        self.wheel.setGeometry(0, 0, int(W * 0.34), H)
+        ww = max(int(W * 0.34), min(320, int(W * 0.44)))   # узкое окно: подписи настроений не обрезаются
+        self.wheel.setGeometry(0, 0, ww, H)
+        self.LEFT = max(WavePage.LEFT, ww / max(1, W) - 0.04)
         self._title_pm = None
         if self._gl is not None:
             self._gl.widget.setGeometry(self.rect())
@@ -1747,17 +1846,24 @@ class WavePage(QWidget):
             return
         p.save()
         p.setClipRect(QRect(x0, 0, overlap, H))
+        glass = _phantom()
+        if glass:                                      # Phantom: свет туманности поверх фона панели
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         p.drawImage(QRectF(0, 0, W, H), self._img)
-        g = QLinearGradient(x0, 0, W * .44, 0)
-        g.setColorAt(0.0, QColor(0, 0, 0, 255))
-        g.setColorAt(.4, QColor(0, 0, 0, 170))
-        g.setColorAt(1.0, QColor(0, 0, 0, 0))
-        p.fillRect(QRectF(x0, 0, overlap, H), g)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        if not glass:                                  # Phantom: без затемнения — список на том же стекле
+            g = QLinearGradient(x0, 0, W * .44, 0)
+            g.setColorAt(0.0, QColor(0, 0, 0, 255))
+            g.setColorAt(.4, QColor(0, 0, 0, 170))
+            g.setColorAt(1.0, QColor(0, 0, 0, 0))
+            p.fillRect(QRectF(x0, 0, overlap, H), g)
         p.restore()
 
     def _paint_decor(self, p, W, H, soft=False):
         x0 = int(W * self.LEFT)
-        if soft:
+        if soft and _phantom():
+            pass                                           # Phantom: лучи уходят под список без затемнения
+        elif soft:
             # GPU: туманность идёт на всю ширину, лучи уходят под список и гаснут плавно (без обреза у края списка)
             g = QLinearGradient(0, 0, W * 0.46, 0)
             g.setColorAt(0.0, QColor(0, 0, 0, 236))
@@ -1765,6 +1871,8 @@ class WavePage(QWidget):
             g.setColorAt(x0 / max(1.0, W * 0.46), QColor(0, 0, 0, 150))
             g.setColorAt(1.0, QColor(0, 0, 0, 0))
             p.fillRect(QRectF(0, 0, W * 0.46, H), g)
+        elif _phantom():                                   # Phantom: без затемнения у списка — нет шва
+            pass
         else:
             p.fillRect(QRectF(0, 0, x0 + 1, H), QColor(0, 0, 0))
             g = QLinearGradient(x0, 0, W * 0.44, 0)        # мягкий переход от списка к туманности
@@ -1792,10 +1900,15 @@ class WavePage(QWidget):
             path.addRoundedRect(QRectF(0, 0, W, H), 16, 16)
             self._clip_rgn = QRegion(path.toFillPolygon().toPolygon())
             self._clip_key = (W, H)
-        p.setClipRegion(self._clip_rgn)
-        p.fillRect(self.rect(), QColor(0, 0, 0))
+        glass = _ph_backdrop(self, p)                  # Phantom: под туманностью — фон за панелью, не чёрное
+        if not glass:                                  # (во всю площадь, без скругления — иначе чёрные уголки)
+            p.setClipRegion(self._clip_rgn)
+            p.fillRect(self.rect(), QColor(0, 0, 0))
         if self._img is not None:
+            if glass:
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
             p.drawImage(QRectF(0, 0, W, H), self._img)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         self._paint_decor(p, W, H)
         p.end()
 
@@ -1816,7 +1929,8 @@ class WaveHero(QWidget):
         self.setAutoFillBackground(False)
         self.corner = QColor(18, 18, 18)
         self.neb = NebulaField()
-        self.neb.set_scheme(SCHEMES["my"], True)
+        self.neb.set_scheme(scheme_for("my"), True)
+        _LIVE.add(self)
         for _ in range(40):
             self.neb._advance(0.0, 0.05)
         self.sub = "Всё, что вы любите, и немного нового"
@@ -1873,6 +1987,9 @@ class WaveHero(QWidget):
         self._gl = None
 
     def _gl_mask(self):
+        if _phantom():
+            self._gl.widget.clearMask()
+            return
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), 22, 22)
         self._gl.widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
@@ -1880,7 +1997,7 @@ class WaveHero(QWidget):
     def _gl_overlay(self):
         W, H = self.width(), self.height()
         dpr = self.devicePixelRatioF()
-        key = (W, H, dpr, bool(self._hover), _tr("Моя волна"), _tr(self.sub))
+        key = (W, H, dpr, bool(self._hover), _tr("Моя волна"), _tr(self.sub), _backdrop_key(self))
         if key == self._gl_ov_k:
             return
         self._gl_ov_k = key
@@ -1888,6 +2005,9 @@ class WaveHero(QWidget):
         pm.setDevicePixelRatio(dpr)
         pm.fill(Qt.GlobalColor.transparent)
         q = QPainter(pm)
+        bd = _screen_backdrop(self, W, H, dpr)
+        if bd is not None:
+            q.drawImage(0, 0, bd)
         q.setRenderHint(QPainter.RenderHint.Antialiasing)
         self._paint_text(q, W, H)
         q.end()
@@ -1963,16 +2083,22 @@ class WaveHero(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
-        p.fillRect(self.rect(), self.corner)                   # непрозрачный виджет: углы — цветом панели
+        glass = _ph_backdrop(self, p)                          # Phantom: углы и фон — то, что за панелью
+        if not glass:
+            p.fillRect(self.rect(), self.corner)               # непрозрачный виджет: углы — цветом панели
         if self._gl_state == "on":                             # туманность и надписи — на GPU-виджете
             p.end()
             return
         path = QPainterPath()
         path.addRoundedRect(QRectF(0, 0, W, H), 22, 22)
         p.setClipPath(path)
-        p.fillRect(self.rect(), QColor(0, 0, 0))
+        if not glass:
+            p.fillRect(self.rect(), QColor(0, 0, 0))
         if self._img is not None:
+            if glass:
+                p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
             p.drawImage(QRectF(0, 0, W, H), self._img)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         dpr = self.devicePixelRatioF()
         key = (W, H, dpr, bool(self._hover), _tr("Моя волна"), _tr(self.sub))
         if key != self.__dict__.get("_ov_k"):              # надписи не меняются от кадра к кадру туманности

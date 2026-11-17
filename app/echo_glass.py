@@ -330,6 +330,14 @@ def _skin_tail() -> str:
 
 
 
+def _phantom_on() -> bool:
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
 class GlassFrame(QFrame):
     """Рамка из «жидкого стекла» (как главный экран и плеер) — для всплывающих окошек и диалогов.
     Поверхность рисуется один раз на размер и кэшируется (без затрат в каждом кадре)."""
@@ -342,6 +350,14 @@ class GlassFrame(QFrame):
     def paintEvent(self, e):
         from ya_skin import interface_radius
         radius = interface_radius(self._radius)
+        if _phantom_on():                                      # вид Phantom — стекло Phantom
+            import ph_style
+            w = self.window()
+            popup = w is self or w.windowType() in (Qt.WindowType.Popup, Qt.WindowType.ToolTip) or                 w.parentWidget() is not None                   # (Popup включает бит Window — сравнивать тип целиком)
+            p = QPainter(self)                                 # всплывашка — плотное стекло меню, карточка
+            ph_style.paint_surface(p, QRectF(self.rect()), "menu" if popup else "soft", min(radius, 20))
+            p.end()                                            # в настройках — как остальные карточки
+            return
         if getattr(self, "_surface_radius", None) != radius:
             self._surface_radius, self._surface = radius, None
         if self._surface is None or self._surface.size() != self.size() or getattr(self, "_glass_stretch", False):

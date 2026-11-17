@@ -33,6 +33,9 @@
 from __future__ import annotations
 
 import data_home
+import threading
+import os
+import json
 import math
 import random
 import time
@@ -107,6 +110,14 @@ def _Y():
 _BASE = {}
 
 
+def _phantom() -> bool:
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
 def base_accent() -> QColor:
     y = _Y().YELLOW
     c = _BASE.get(y)
@@ -118,6 +129,8 @@ def base_accent() -> QColor:
 
 def accent() -> QColor:
     """Текущий живой акцент (цвет обложки) — или акцент темы."""
+    if _phantom():                                             # вид Phantom — монохром, без цвета обложки
+        return base_accent()
     d = CURRENT
     if d is not None and on("cover_accent") and d.accent is not None:
         return QColor(d.accent)
@@ -144,6 +157,65 @@ def _mix(a: QColor, b: QColor, t: float) -> QColor:
 # ══════════════════════════ цвета обложки ══════════════════════════ #
 
 _PAL: dict = {}
+_PAL_DISK: dict | None = None       # «путь|время|размер» → [[#rrggbb…], температура] — живёт между запусками
+_PAL_DIRTY = False
+_PAL_LOCK = threading.Lock()
+PAL_DISK_MAX = 6000
+
+
+def _pal_file() -> Path:
+    return data_home.root() / "cover_palettes.json"
+
+
+def _pal_disk() -> dict:
+    global _PAL_DISK
+    if _PAL_DISK is None:
+        try:
+            d = json.loads(_pal_file().read_text(encoding="utf-8"))
+            _PAL_DISK = d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            _PAL_DISK = {}
+    return _PAL_DISK
+
+
+def _pal_key(path: str) -> str:
+    try:
+        st = os.stat(path)
+        return f"{path}|{st.st_mtime_ns}|{st.st_size}"
+    except OSError:
+        return ""
+
+
+def _pal_save():
+    global _PAL_DIRTY
+    with _PAL_LOCK:
+        if not _PAL_DIRTY or _PAL_DISK is None:
+            return
+        _PAL_DIRTY = False
+        data = dict(_PAL_DISK)
+    try:
+        f = _pal_file()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(f)
+    except OSError as e:
+        print("[decor] palettes:", e)
+
+
+def _pal_put(dk: str, out: list):
+    global _PAL_DIRTY
+    disk = _pal_disk()
+    if len(disk) >= PAL_DISK_MAX:
+        for k in list(disk)[:PAL_DISK_MAX // 4]:
+            disk.pop(k, None)
+    disk[dk] = [[c.name() for c in out[0]], round(float(out[1]), 4)]
+    first = not _PAL_DIRTY
+    _PAL_DIRTY = True
+    if first:                                                  # записать разом, через несколько секунд, не в потоке окна
+        t = threading.Timer(6.0, _pal_save)
+        t.daemon = True
+        t.start()
 
 
 def palette(path: str) -> list:
@@ -152,6 +224,18 @@ def palette(path: str) -> list:
     hit = _PAL.get(key)
     if hit is not None:
         return hit
+    dk = _pal_key(path) if path else ""
+    if dk:                                                     # уже считали в прошлый запуск — файл не читаем
+        ent = _pal_disk().get(dk)
+        try:
+            if ent and len(ent[0]) >= 3:
+                out = [[QColor(c) for c in ent[0]], float(ent[1])]
+                if len(_PAL) > 400:
+                    _PAL.clear()
+                _PAL[key] = out
+                return out
+        except (TypeError, ValueError, IndexError):
+            pass
     cols, temp = [], 0.0
     img = QImage()
     if path and Path(path).exists():
@@ -199,6 +283,8 @@ def palette(path: str) -> list:
     if len(_PAL) > 400:
         _PAL.clear()
     _PAL[key] = out
+    if dk and not img.isNull():                                # запасные цвета (нет картинки) зависят от темы — не храним
+        _pal_put(dk, out)
     return out
 
 

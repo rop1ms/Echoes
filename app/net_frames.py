@@ -109,7 +109,27 @@ def _clean_spec(spec) -> dict:
     if fid == "role" or (fid.startswith("ach:") and fid[4:] in ACH_FRAMES) or fid == "none" or \
             (fid.startswith("season:") and fid[7:] in SEASON_FRAMES):
         return {"id": fid}
+    import net_cosmetics                                       # рамки Phantom: бесплатные и для спонсоров
+    if (fid.startswith("ph:") and fid[3:] in net_cosmetics.FREE) or \
+            (fid.startswith("sp:") and fid[3:] in net_cosmetics.SPONSOR):
+        return {"id": fid}
     return {}
+
+
+def _ph() -> bool:
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def ph_animated(spec) -> bool:
+    """Вид Phantom: у встроенных рамок своя анимация (если не выбрана другая)."""
+    if not _ph() or not spec or spec.get("anim"):
+        return False
+    import net_cosmetics
+    return net_cosmetics.has(net_cosmetics.kind_of(spec))
 
 
 def effective(spec, ach=(), role="") -> dict:
@@ -117,6 +137,8 @@ def effective(spec, ach=(), role="") -> dict:
     spec = clean_spec(spec)
     fid = spec.get("id", "")
     if fid.startswith("ach:") and fid[4:] not in set(ach or ()):
+        spec, fid = {}, ""
+    if fid.startswith("sp:") and "__sponsor__" not in set(ach or ()):   # рамки спонсоров — только у спонсоров
         spec, fid = {}, ""
     if fid == "role" and role not in ROLE_FRAMES:
         spec, fid = {}, ""
@@ -172,6 +194,10 @@ def _note(p, x, y, s, col):
 def draw_builtin(p: QPainter, kind: str, S: float):
     """Нарисовать встроенную рамку размером S×S (центр — середина)."""
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if _ph():                                                  # Phantom: стекло и серебро вместо неона
+        import net_cosmetics
+        if net_cosmetics.draw(p, kind, S, 0.0):
+            return
     c = QPointF(S / 2, S / 2)
     R = S / 2 - S * 0.01
     w = S * 0.085
@@ -492,6 +518,9 @@ def frame_pixmap(spec: dict, size: int) -> QPixmap | None:
         draw_builtin(p, fid[4:], size)
     elif fid.startswith("season:"):
         draw_builtin(p, fid, size)
+    elif fid.startswith(("ph:", "sp:")):
+        import net_cosmetics
+        net_cosmetics.draw(p, fid[3:], size, 0.0)
     else:
         p.end()
         return None
@@ -521,6 +550,30 @@ def framed_anim(avatar: QPixmap, spec: dict, size: int, t: float) -> QPixmap:
     """Кадр анимированной рамки: аватарка на месте, рамка пульсирует / вращается / сияет / качается под музыку."""
     import math
     a = (spec or {}).get("anim") or ""
+    if not a and ph_animated(spec):                            # своя анимация рамки Phantom
+        import net_cosmetics
+        dpr = 2
+        pm = QPixmap(size * dpr, size * dpr)
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        ins = size * INSET
+        if not avatar.isNull():                                # аватарка в нужном размере — один раз, не в каждом кадре
+            key = (avatar.cacheKey(), size)
+            av = _AV_SCALED.get(key)
+            if av is None:
+                side = int(round((size - 2 * ins) * dpr))
+                av = avatar.scaled(side, side, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+                if len(_AV_SCALED) > 40:
+                    _AV_SCALED.clear()
+                _AV_SCALED[key] = av
+            p.drawPixmap(QRectF(ins, ins, size - 2 * ins, size - 2 * ins), av, QRectF(av.rect()))
+        net_cosmetics.draw(p, net_cosmetics.kind_of(spec), size, t)
+        p.end()
+        return pm
     if not a:
         return framed(avatar, spec, size)
     dpr = 2
@@ -589,7 +642,8 @@ def animate_label(label, avatar: QPixmap, spec: dict, size: int, anim_path: str 
         mv = ya_avanim.movie(anim_path, label)
         label._av_movie = mv
     spec = spec or {}
-    if not spec.get("anim") and mv is None:
+    live = bool(spec.get("anim")) or ph_animated(spec)
+    if not live and mv is None:
         label.setPixmap(framed(avatar, spec, size))
         return
     t0 = time.monotonic()
@@ -601,7 +655,7 @@ def animate_label(label, avatar: QPixmap, spec: dict, size: int, anim_path: str 
         if mv is not None:
             import ya_avanim
             av = ya_avanim.circle(mv.currentImage(), size)
-        return framed_anim(av, spec, size, t) if spec.get("anim") else framed(av, spec, size)
+        return framed_anim(av, spec, size, t) if live else framed(av, spec, size)
 
     def tick():
         try:
@@ -615,8 +669,25 @@ def animate_label(label, avatar: QPixmap, spec: dict, size: int, anim_path: str 
     label.setPixmap(frame(0.0))
 
 
+_AV_SCALED: dict = {}
+_FRAMED: dict = {}
+
+
 def framed(avatar: QPixmap, spec: dict, size: int) -> QPixmap:
-    """Готовая аватарка + рамка (для предпросмотра)."""
+    """Готовая аватарка + рамка (для предпросмотра). Кэш: магазин и окно рамок просят одно и то же много раз."""
+    key = (avatar.cacheKey(), (spec or {}).get("id", ""), (spec or {}).get("role", ""),
+           len((spec or {}).get("png") or ""), size)
+    hit = _FRAMED.get(key)
+    if hit is not None:
+        return hit
+    pm = _framed(avatar, spec, size)
+    if len(_FRAMED) > 200:
+        _FRAMED.clear()
+    _FRAMED[key] = pm
+    return pm
+
+
+def _framed(avatar: QPixmap, spec: dict, size: int) -> QPixmap:
     dpr = 2
     pm = QPixmap(size * dpr, size * dpr)
     pm.setDevicePixelRatio(dpr)
@@ -1051,6 +1122,13 @@ class FramePicker(QDialog):
         self.group.setExclusive(True)
         self._add_section("ОБЫЧНЫЕ", [({"id": "none"}, "Без рамки", False, "")] +
                           ([({"id": "custom", "png": self.custom_png}, "Своя", False, "")] if self.custom_png else []))
+        import net_cosmetics                                   # рамки Phantom: свои анимации у каждой
+        self._add_section("PHANTOM — БЕСПЛАТНО", [({"id": "ph:" + k}, n, False, "") for k, n in
+                                                   net_cosmetics.FREE.items()])
+        sp = "__sponsor__" in set(ach or ())
+        self._add_section("ДЛЯ СПОНСОРОВ ECHOES", [({"id": "sp:" + k}, n, not sp,
+                                                     "Для спонсоров ECHOES — магазин, кнопка с пакетом вверху")
+                                                    for k, n in net_cosmetics.SPONSOR.items()])
         gl = [g for g in gifts or () if isinstance(g, dict) and g.get("png") and g.get("png") != self.custom_png]
         if gl:                                                 # подарки друзей (net_gifts)
             self._add_section("ПОДАРЕННЫЕ", [({"id": "custom", "png": g["png"]}, "От " + (g.get("from") or "друга"),

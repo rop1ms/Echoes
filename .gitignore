@@ -48,3 +48,6 @@ Thumbs.db
 desktop.ini
 (null)/
 launcher-preview.png
+
+# graphify knowledge graph (rebuilt locally)
+graphify-out/

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import data_home
 import base64
+import os
 import hashlib
 import time
 from pathlib import Path
@@ -49,8 +50,31 @@ def my_lt(win) -> dict | None:
             "wtrs": __import__("net_weektop").my_week_tracks(win)}         # топ за 7 дней — для «Топа недели друзей»
 
 
+_THUMBS: dict = {}
+
+
 def _thumb_b64(path, side=96) -> str:
-    img = QImage(str(path)) if path else QImage()
+    """Миниатюра обложки строкой для профиля. Запоминается по файлу: профиль собирает плейлисты трижды за одно
+    открытие, и каждый раз обложка читалась и сжималась заново — это было видно как пауза окна."""
+    if not path:
+        return ""
+    try:
+        st = os.stat(path)
+        key = (str(path), st.st_mtime_ns, st.st_size, side)
+    except OSError:
+        return ""
+    hit = _THUMBS.get(key)
+    if hit is not None:
+        return hit
+    out = _thumb_make(path, side)
+    if len(_THUMBS) > 64:
+        _THUMBS.clear()
+    _THUMBS[key] = out
+    return out
+
+
+def _thumb_make(path, side) -> str:
+    img = QImage(str(path))
     if img.isNull():
         return ""
     s = min(img.width(), img.height())

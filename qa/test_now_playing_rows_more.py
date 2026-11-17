@@ -8,6 +8,9 @@ from pathlib import Path
 
 source = Path(__file__).with_name('ui_smoke.py').read_text('utf-8')
 exec(compile(source.split('win = None')[0], str(Path(__file__).with_name('ui_smoke.py')), 'exec'))
+import json as _pj  # noqa: E402  — прежний вид Echoes Music (Phantom теперь по умолчанию)
+_ps = _pj.loads((data / 'settings.json').read_text('utf-8')); _ps['ya_layout'] = 'new'
+(data / 'settings.json').write_text(_pj.dumps(_ps), encoding='utf-8')
 import main, ui_anim
 from PyQt6.QtCore import QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPainter, QShortcut
@@ -267,7 +270,7 @@ icon_only = [b for b in bar.findChildren(QAbstractButton) if b.isVisible() and n
 check(len(icon_only) <= 10, f"значков в плеере стало меньше: {len(icon_only)}")
 items = shell.player_more_items()
 keys = [it["key"] for it in items]
-check(keys == ["now", "moment", "clip", "cover", "sound", "theme", "settings"], "в «Ещё» — все убранные действия: " + ", ".join(keys))
+check(keys == ["now", "scene", "moment", "clip", "cover", "sound", "theme", "settings"], "в «Ещё» — все убранные действия: " + ", ".join(keys))
 check(all(it["text"].strip() and it["icon"] and callable(it["fn"]) for it in items), "у каждого пункта значок, подпись и действие")
 shell.b_pmore.click(); settle(.3)
 pop = shell._more_pop

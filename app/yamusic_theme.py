@@ -69,10 +69,22 @@ CARD_RADIUS = 10                    # скругление обложек аль
 ARTIST_ROUND = True                 # исполнители — круглые (иначе как альбомы)
 
 
+_PH_SKIN = None
+
+
 def ya_font(px: int, weight=QFont.Weight.Normal) -> QFont:
     f = QFont()
     f.setFamilies(FAMILIES)
     f.setPixelSize(int(px))
+    global _PH_SKIN
+    if _PH_SKIN is None:
+        import ya_skin as _PH_SKIN
+    if _PH_SKIN.PHANTOM_ON:                                    # Phantom: заголовки Inter 650, не «чёрные» 900
+        w = int(weight.value if hasattr(weight, "value") else weight)
+        if w >= 800:
+            weight = QFont.Weight(650)
+        elif w >= 700:
+            weight = QFont.Weight(600)
     f.setWeight(weight)
     return f
 
@@ -641,8 +653,65 @@ def set_placeholder(path: str):
     clear_cover_cache()
 
 
+_PH_PLACE: dict = {}
+
+
+def _ph_initials(seed: str) -> str:
+    """Инициалы для заглушки Phantom из пути или названия: «Исполнитель - Название.mp3» → Н + И (как «DM» у
+    Phantom: название + исполнитель); без исполнителя — первые буквы двух слов."""
+    import re as _re
+    stem = Path(str(seed or "")).stem if ("/" in str(seed) or "\\" in str(seed) or "." in str(seed)[-6:]) else str(seed)
+    stem = _re.sub(r"\s*[\(\[].*?[\)\]]", "", stem).strip()
+    if " - " in stem:
+        artist, title = stem.split(" - ", 1)
+        a, t = artist.strip()[:1], title.strip()[:1]
+        if a and t:
+            return (t + a).upper()
+    words = [w for w in _re.split(r"[\s_\-·.,]+", stem) if w and w[0].isalnum()]
+    if len(words) >= 2:
+        return (words[0][0] + words[1][0]).upper()
+    return (words[0][:2] if words else "♪").upper()
+
+
+def _ph_placeholder(size: int, seed: str = "") -> QPixmap:
+    """Заглушка обложки в виде Phantom: тёмный градиент, тонкие кольца, инициалы трека (одна на размер и буквы)."""
+    ini = _ph_initials(seed)
+    key = (size, ini)
+    hit = _PH_PLACE.get(key)
+    if hit is not None:
+        return QPixmap(hit)
+    import ph_style
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    g = QLinearGradient(0, 0, size, size)
+    g.setColorAt(0, QColor(24, 24, 24))
+    g.setColorAt(1, QColor(8, 8, 8))
+    p.fillRect(pm.rect(), g)
+    p.setPen(QPen(QColor(255, 255, 255, 16), max(1.0, size / 160)))
+    for k, off in ((.2, 0), (.34, .05), (.5, 0), (.66, .04)):
+        p.drawEllipse(QPointF(size * (.46 + off), size * (.44 + off * .6)), size * k, size * k)
+    f = ph_style.font(max(7, size * .3), 650, -.02, scaled=False)
+    p.setFont(f)
+    p.setPen(QColor(255, 255, 255, 220))
+    p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, ini)
+    p.end()
+    if len(_PH_PLACE) > 160:
+        _PH_PLACE.clear()
+    _PH_PLACE[key] = QPixmap(pm)
+    return pm
+
+
 def _placeholder(size: int, seed: str = "") -> QPixmap:
     own = PLACEHOLDER.get("pm")
+    if own is None:
+        try:
+            import ya_skin
+            if ya_skin.PHANTOM_ON:                             # вид Phantom — тёмная плитка с инициалами
+                return _ph_placeholder(size, seed)
+        except Exception:                                      # noqa: BLE001
+            pass
     if own is not None:                                        # своя картинка — по центру, квадратом
         cache = PLACEHOLDER.setdefault("scaled", {})
         key = (own.cacheKey(), size)
@@ -1084,6 +1153,38 @@ class TrackDelegate(QStyledItemDelegate):
             view = getattr(opt, "widget", None)
             if playing and hasattr(view, "eq_seen"):
                 view.eq_seen(idx.row())                        # только эта строка перерисовывается по кадрам
+        fx = getattr(getattr(opt, "widget", None), "_like_fx", None)
+        if fx is not None and fx[2] == idx.row() and fx[0] == str(row["t"].get("path", "")):
+            self._paint_like_fx(p, opt.rect, (time.monotonic() - fx[1]) / TrackListView.LIKE_FX_S)
+
+    def _paint_like_fx(self, p: QPainter, r: QRect, t: float):
+        """Всплеск на только что поставленном лайке: сердце подпрыгивает, от него расходятся кольцо и искры.
+        Рисуется вживую поверх готовой картинки строки (как эквалайзер), 0.6 с."""
+        if not 0.0 <= t < 1.0:
+            return
+        acc = QColor(YELLOW)
+        hz = self.zones(r)[0]
+        c = QPointF(hz.center().x() + 0.5, hz.center().y() + 0.5)
+        e = 1.0 - (1.0 - t) ** 3
+        p.save()
+        p.setClipRect(r)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setOpacity(1.0 - t)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(acc, 2.2 * (1.0 - t) + 0.4))
+        p.drawEllipse(c, 9 + 14 * e, 9 + 14 * e)
+        p.setPen(Qt.PenStyle.NoPen)
+        for k in range(6):
+            ang = k * math.pi / 3 + 0.5
+            rr = 13 + 13 * e
+            p.setBrush(acc if k % 2 else QColor(255, 255, 255))
+            d = 2.6 * (1.0 - t) + 0.5
+            p.drawEllipse(QPointF(c.x() + math.cos(ang) * rr, c.y() + math.sin(ang) * rr), d, d)
+        p.setOpacity(1.0)
+        z = 20 * (1.0 + 0.85 * math.sin(math.pi * t) * (1.0 - t))
+        ya_icon("heart_fill", 20, YELLOW).paint(p, QRectF(c.x() - z / 2, c.y() - z / 2, z, z).toRect())
+        p.restore()
 
     def _paint_cached(self, p: QPainter, opt, row):
         t = row["t"]
@@ -1343,6 +1444,34 @@ class TrackListView(QListView):
         sc.setContext(Qt.ShortcutContext.WidgetShortcut)
         sc.activated.connect(self._delete_key)
 
+    LIKE_FX_S = 0.6                                            # длительность всплеска на лайке в строке
+
+    def like_fx(self, path: str, row: int):
+        """Лайк поставили в этой строке — показать всплеск (перерисовывается только место вокруг сердца)."""
+        import motion
+        if motion.strength() <= 0:
+            return
+        self._like_fx = (path, time.monotonic(), row)
+        tm = self.__dict__.get("_fx_timer")
+        if tm is None:
+            tm = self._fx_timer = FrameTimer(self)
+            tm.setInterval(8)
+            tm.timeout.connect(self._fx_tick)
+        tm.start()
+
+    def _fx_tick(self):
+        fx = self.__dict__.get("_like_fx")
+        try:
+            if fx is None or not self.isVisible() or time.monotonic() - fx[1] > self.LIKE_FX_S                     or not 0 <= fx[2] < self.model_.rowCount():
+                self._like_fx = None
+                self._fx_timer.stop()
+                self.viewport().update()
+                return
+            r = self.visualRect(self.model_.index(fx[2]))
+            self.viewport().update(TrackDelegate.zones(r)[0].adjusted(-28, -16, 28, 16).intersected(r))
+        except RuntimeError:
+            pass
+
     def eq_seen(self, row: int):
         """Делегат нарисовал эквалайзер играющей строки: дальше по кадрам обновляется только её обложка.
         Таймер сам гаснет, когда строку перестали рисовать (ушла из вида, пауза, другой трек) или анимации выключены."""
@@ -1469,6 +1598,8 @@ class TrackListView(QListView):
                     return
                 self.shell.toggle_like(row["t"])
                 self.viewport().update()
+                if self.shell.is_liked(row["t"]):
+                    self.like_fx(str(row["t"].get("path", "")), idx.row())
                 return
             if cov.contains(pt):
                 if self.shell.is_current(row["t"]):
@@ -1881,7 +2012,8 @@ class HRow(QScrollArea):
         return self
 
     def card(self, *a, **kw) -> "Card":
-        c = Card(*a, **kw)
+        import ph_kit
+        c = ph_kit.make_card_class()(*a, **kw) if ph_kit.on() else Card(*a, **kw)
         self.add(c)
         return c
 
@@ -2032,18 +2164,27 @@ class NativeCardGrid(NativeCardRow):
 
 
 def card_grid():
-    """Сетка карточек: на C++, если echoes_ui.dll подходит, иначе прежняя CardGrid."""
+    """Сетка карточек: на C++, если echoes_ui.dll подходит, иначе прежняя CardGrid. Phantom — своя сетка."""
+    import ph_kit
+    if ph_kit.on():
+        return ph_kit.PhGrid()
     import native_ui
     return NativeCardGrid() if native_ui.available() else CardGrid()
 
 
 def card_row():
-    """Лента карточек: на C++, если echoes_ui.dll подходит к этому Qt, иначе прежняя HRow."""
+    """Лента карточек: на C++, если echoes_ui.dll подходит к этому Qt, иначе прежняя HRow. Phantom — свой ряд."""
+    import ph_kit
+    if ph_kit.on():
+        return ph_kit.PhRow()
     import native_ui
     return NativeCardRow() if native_ui.available() else HRow()
 
 
 def section_title(text, on_more=None) -> QWidget:
+    import ph_kit
+    if ph_kit.on():                                            # Phantom: Inter 17/650 и «Все ›»
+        return ph_kit.section_title(text, on_more)
     w = QWidget()
     w.setObjectName("YaPageInner")
     lay = QHBoxLayout(w)
@@ -2547,7 +2688,8 @@ class CardGrid(QScrollArea):
         self._pending = []
 
     def card(self, *a, **kw) -> "Card":
-        c = Card(*a, **kw)
+        import ph_kit
+        c = ph_kit.make_card_class()(*a, **kw) if ph_kit.on() else Card(*a, **kw)
         self.__dict__.setdefault("_pending", []).append(c)
         return c
 
@@ -2585,6 +2727,40 @@ class CardGrid(QScrollArea):
 _LIKED_PM: dict = {}
 
 
+def _ph_liked_cover(size: int, radius: float) -> QPixmap:
+    """«Мне нравится» в виде Phantom: тёмная плитка, кольца, белое залитое сердце Lucide с мягким свечением."""
+    import ph_style
+    dpr = 2.0
+    pm = QPixmap(int(size * dpr), int(size * dpr))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, size, size), radius, radius)
+    g = QLinearGradient(0, 0, size, size)
+    g.setColorAt(0, QColor(30, 30, 30))
+    g.setColorAt(1, QColor(8, 8, 8))
+    p.fillPath(path, g)
+    p.setClipPath(path)
+    glow = QRadialGradient(size * .5, size * .52, size * .42)
+    glow.setColorAt(0, QColor(255, 255, 255, 34))
+    glow.setColorAt(1, QColor(255, 255, 255, 0))
+    p.fillRect(QRectF(0, 0, size, size), glow)
+    p.setPen(QPen(QColor(255, 255, 255, 14), max(1.0, size / 160)))
+    for k in (.3, .44, .6):
+        p.drawEllipse(QPointF(size * .5, size * .52), size * k, size * k)
+    s_ = max(8, int(size * .42))
+    ic = ph_style.icon_pixmap("heart", s_, ph_style.TEXT_PRIMARY, 1.6, dpr=dpr, fill=ph_style.TEXT_PRIMARY)
+    p.drawPixmap(QPointF((size - s_) / 2, (size - s_) / 2 + size * .02), ic)
+    p.setClipping(False)
+    p.setPen(QPen(QColor(255, 255, 255, 17), 1))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(path)
+    p.end()
+    return pm
+
+
 def liked_cover(size: int, radius: float = 9) -> QPixmap:
     """Обложка «Мне нравится»: глянцевое заполненное сердце с бликом на тёплом градиенте — сразу видно, что это
     любимое, и не похоже на контурное сердце коллекции."""
@@ -2592,6 +2768,14 @@ def liked_cover(size: int, radius: float = 9) -> QPixmap:
     pm = _LIKED_PM.get(key)
     if pm is not None:
         return pm
+    try:
+        import ya_skin
+        if ya_skin.PHANTOM_ON:                                 # вид Phantom — своя обложка (прежняя остаётся)
+            pm = _ph_liked_cover(size, radius)
+            _LIKED_PM[key] = pm
+            return pm
+    except Exception:                                          # noqa: BLE001
+        pass
     dpr = 2.0
     pm = QPixmap(int(size * dpr), int(size * dpr))
     pm.setDevicePixelRatio(dpr)
@@ -2928,7 +3112,7 @@ class YaShell(QWidget):
         self._wave_kind = None
         self._coll_filter = ("all", None)
 
-        self._layout_mode = win.settings.get("ya_layout", "new")
+        self._layout_mode = win.settings.get("ya_layout", "phantom")
         self._build_nav_common(win)
         self.ph = None                                         # раскладка Phantom Audio (ph_shell), если выбрана
         if self._layout_mode == "classic":
@@ -2996,6 +3180,7 @@ class YaShell(QWidget):
                        ("search", "wave", "foryou", "collection", "albums", "tierlist") else "foryou")
         if self.ph is not None:                                # Phantom открывается главным экраном, без панели
             self.ph.ready = True
+            self.ph.set_mode(self.ph.mode)                     # панель текста создана со страницами — забрать её
             self.ph.track_changed(self.current_track())
 
 
@@ -3625,6 +3810,7 @@ class YaShell(QWidget):
         np_ = self.__dict__.get("_now_playing")
         if np_ is not None and np_.isVisible():                # переход на страницу — экран «Сейчас играет» убирается
             np_.close_mode(instant=True)
+        self.close_scene(instant=True)
         if ph_ is None:
             try:                                               # «Моя волна» — панели вокруг уходят в темноту
                 import wave_veil
@@ -3684,10 +3870,11 @@ class YaShell(QWidget):
         kind = ("up" if key in sheets and old_key not in sheets else
                 "down" if old_key in sheets and key not in sheets else "slide")
         sw = getattr(self.win, "animate_switch", None)
+        target = (ph_.page_widget(key) if ph_ is not None else None) or self.pages[key]   # Phantom: своя панель
         if ph_ is not None and not ph_.overlay_open():         # панель только открывается — без «перелистывания»
-            self.stack.setCurrentWidget(self.pages[key])
+            self.stack.setCurrentWidget(target)
         else:
-            sw(self.stack, self.pages[key], d, kind) if sw else self.stack.setCurrentWidget(self.pages[key])
+            sw(self.stack, target, d, kind) if sw else self.stack.setCurrentWidget(target)
         if ph_ is not None:
             ph_.page_shown(key)
         self.btn_lyrics.setChecked(key == "lyrics")
@@ -3696,12 +3883,33 @@ class YaShell(QWidget):
     IDLE_REBUILD = ("foryou", "collection", "albums", "wave")
     STALE_OK = ("foryou", "wave")         # можно показать прежнюю версию и обновить в простое
 
+    IDLE_INPUT_S = 2.0                                         # столько пользователь не трогал мышь и клавиатуру
+
+    @staticmethod
+    def _input_idle_s() -> float:
+        """Сколько секунд назад было последнее нажатие/движение (Windows). Не узнать — считаем, что давно."""
+        try:
+            import ctypes
+
+            class _LII(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+            info = _LII()
+            info.cbSize = ctypes.sizeof(_LII)
+            if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+                return 1e9
+            return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+        except Exception:                                      # noqa: BLE001
+            return 1e9
+
     def _idle_rebuild(self):
         """Одна изменившаяся страница за раз, только в простое: вкладку не переключали 1.5 с, колесо не крутили,
-        кнопки мыши отпущены, окно на экране."""
+        кнопки мыши отпущены, окно на экране, и пользователь пару секунд ничего не нажимал. Без последнего
+        условия лайк тут же пересобирал скрытые страницы (по ~80 мс каждая) — прямо поверх анимации лайка."""
         import time as _t
         from PyQt6.QtWidgets import QApplication
         if not self._dirty or not self.isVisible() or self.win.isMinimized():
+            return
+        if self._input_idle_s() < self.IDLE_INPUT_S or self.now_playing_open():
             return
         now = _t.monotonic()
         if now - self._last_nav < 1.5 or now - self.decor.__dict__.get("_busy_t", 0) < 1.5 \
@@ -3720,9 +3928,13 @@ class YaShell(QWidget):
             sb = pg.verticalScrollBar() if hasattr(pg, "verticalScrollBar") else None
             keep = sb.value() if sb is not None else 0
             try:
+                if key == "foryou":
+                    self._fy_staged = True                     # главная — по частям, с кадрами между секциями
                 self._rebuild(key)
             except Exception as e:                             # noqa: BLE001
                 print("[idle rebuild]", key, e)
+            finally:
+                self.__dict__.pop("_fy_staged", None)
             if sb is not None and key == self._cur_page:       # открытая страница — на том же месте
                 QTimer.singleShot(0, lambda sb=sb, keep=keep: sb.setValue(keep))
 
@@ -3950,6 +4162,9 @@ class YaShell(QWidget):
             {"key": "now", "icon": "headphones", "text": "Сейчас играет", "hint": "Ctrl+Shift+N",
              "tip": "Обложка, текст и очередь — на всё окно",
              "fn": self.open_now_playing},
+            {"key": "scene", "icon": "star", "text": "Сцена",
+             "tip": "Текст с живыми карточками к каждой строке — на всё окно",
+             "fn": self.open_scene},
             {"key": "moment", "icon": fire, "text": "Реакция на этот момент",
              "tip": "Реакция на этот момент трека — друзья увидят её, когда будут его слушать",
              "fn": lambda: __import__("net_moments").show_picker(self, self.b_pmore)},
@@ -3992,6 +4207,9 @@ class YaShell(QWidget):
         np_ = self.__dict__.get("_now_playing")
         if np_ is not None and np_.isVisible():
             np_.setGeometry(self.rect())
+        sc_ = self.__dict__.get("_scene")
+        if sc_ is not None and sc_.isVisible():
+            sc_.setGeometry(self.rect())
         ph_ = self.__dict__.get("ph")
         if ph_ is not None:
             ph_.relayout()
@@ -4001,6 +4219,7 @@ class YaShell(QWidget):
     def _responsive(self):
         """Узкое окно: разделы — только значками, ползунок громкости и ник прячутся."""
         W = self.width()
+        self._fit_fy_hero()
         bar = getattr(self, "_player_bar", None)
         if bar is not None:
             self.vol.setVisible(bar.width() >= 760)
@@ -4071,7 +4290,7 @@ class YaShell(QWidget):
         if key != self._track_key:
             self._track_key = key
             self._on_track_changed(t)
-        if self._cur_page == "queue":
+        if self._cur_page == "queue" and self.ph is None:      # у Phantom — своя панель очереди
             qp = self.pages["queue"]
             if qp.signature() != qp.sig:
                 qp.refresh()
@@ -4202,6 +4421,13 @@ class YaShell(QWidget):
         self.search_edit.textChanged.connect(
             lambda _: self._search_timer.start(900 if self._search_online() else 180))
         self.search_edit.returnPressed.connect(self._search_now)
+        import ph_kit
+        if ph_kit.on():                                        # Phantom: большое поле поиска со значком
+            import ph_style as _ph
+            self.search_edit.setObjectName("PhSearch")
+            self.search_edit.setMinimumHeight(_ph.px(46))
+            _ph.set_font(self.search_edit, _ph.font(_ph.TEXT_BASE + 1, 500))
+            self.search_edit.setClearButtonEnabled(True)
         page.v.addWidget(self.search_edit)
         # где искать: коллекция или интернет (YouTube Music + SoundCloud)
         mrow = QHBoxLayout(); mrow.setSpacing(8); mrow.setContentsMargins(0, 14, 0, 0)
@@ -4245,6 +4471,15 @@ class YaShell(QWidget):
         row.addStretch(1)
         self.s_local_row = QWidget(); self.s_local_row.setObjectName("YaPage"); self.s_local_row.setLayout(row)
         page.v.addWidget(self.s_local_row)
+        self.s_best = None
+        import ph_kit
+        if ph_kit.on():                                        # Phantom: «Лучшее совпадение» над результатами
+            self.s_best = ph_kit.BestMatch()
+            self.s_best.hide()
+            self.s_best.clicked.connect(self._search_best_open)
+            self.s_best.play.connect(self._search_best_play)
+            page.v.addSpacing(10)
+            page.v.addWidget(self.s_best)
         self.s_title = section_title("Популярное у вас")
         page.v.addWidget(self.s_title)
         self.s_artists = HRow()
@@ -4374,14 +4609,19 @@ class YaShell(QWidget):
                 a = _artist_main(t.get("artist", ""))
                 if a and any(len(w) > 1 and w in a.lower() for w in qt):      # исполнитель, чьё имя есть в запросе
                     arts.setdefault(a, t)
+            import ph_kit
+            card_cls = ph_kit.make_card_class() if ph_kit.on() else Card
             for a, t in list(arts.items())[:12]:
-                c = Card(a, "Исполнитель", t.get("cover", ""), 120, circle=True)
+                c = card_cls(a, "Исполнитель", t.get("cover", ""), 120, circle=True)
                 c.clicked.connect(lambda a=a: self.open_artist(a))
                 self.s_artists.add(c)
             self.s_artists.setVisible(bool(arts))
             self.s_list.set_rows(self._lib_rows(found[:300]))
+            self._search_best(q, found, arts)
             return
         self.s_artists.setVisible(False)
+        if self.s_best is not None:
+            self.s_best.hide()
         if self.s_hist.isChecked():
             items = sorted(((h.get("last", ""), int(h.get("count", 0)), p) for p, h in hist.items()), reverse=True)
             lbl.setText("Недавно слушали")
@@ -4395,9 +4635,93 @@ class YaShell(QWidget):
             lbl.setText("Недавно добавленные")
         self.s_list.set_rows(self._lib_rows(tracks))
 
+    def _search_best(self, q, found, arts):
+        """Phantom: что точнее всего подходит под запрос — исполнитель (имя совпадает) или трек."""
+        b = self.s_best
+        if b is None:
+            return
+        if not found:
+            b.hide()
+            return
+        ql = q.strip().lower()
+        best_art = next((a for a in arts if a.lower() == ql or a.lower().startswith(ql)), None)
+        if best_art:
+            n = sum(1 for t in found if _artist_main(t.get("artist", "")) == best_art)
+            self._s_best = ("artist", best_art, arts[best_art])
+            word = "трек" if n % 10 == 1 and n % 100 != 11 else ("трека" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14
+                                                                 else "треков")
+            b.set_data("исполнитель", best_art, f"{n} {word} в коллекции", arts[best_art].get("cover", ""), True)
+        else:
+            def score(t):
+                ti = sanitize_title(t.get("title", "")).lower()
+                return (0 if ti == ql else 1 if ti.startswith(ql) else 2 if ql in ti else 3, len(ti))
+            t = min(found, key=score)
+            self._s_best = ("track", sanitize_title(t.get("title", "")), t)
+            alb = t.get("album") or ""
+            b.set_data("трек", sanitize_title(t.get("title", "")),
+                       t.get("artist", "") + (f"  ·  {alb}" if alb else ""), t.get("cover", ""))
+        b.show()
+
+    def _search_best_open(self):
+        kind, name, _t = self.__dict__.get("_s_best") or (None, None, None)
+        if kind == "artist":
+            self.open_artist(name)
+        elif kind == "track":
+            self._search_best_play()
+
+    def _search_best_play(self):
+        kind, name, t = self.__dict__.get("_s_best") or (None, None, None)
+        if kind == "artist":
+            rows = self._lib_rows([x for x in self.win.library if _artist_main(x.get("artist", "")) == name])
+        elif kind == "track":
+            rows = self._lib_rows([t])
+        else:
+            return
+        if rows:
+            self.play_row(rows[0])
+
     # ── страница «Для вас» ───────────────────────────────────────────── #
 
     def _fill_foryou(self):
+        """Собрать главную. Обычно — сразу целиком. Из фоновой пересборки (_idle_rebuild) — по частям, по одной
+        секции за проход цикла событий: целиком это ~200 мс без единого кадра, и всё, что двигалось, дёргалось."""
+        staged = bool(self.__dict__.pop("_fy_staged", False))
+        page = self.pages["foryou"]
+        page.setUpdatesEnabled(True)
+        job = self._fy_job = self._fill_foryou_steps()
+        if not staged:
+            for _ in job:
+                pass
+            return
+        visible = self._cur_page == "foryou"
+        sb = page.verticalScrollBar()
+        keep = sb.value()
+        if visible:                                    # открытая страница: старая картинка стоит, пока не готова новая
+            page.setUpdatesEnabled(False)
+
+        def finish():
+            try:
+                page.setUpdatesEnabled(True)
+                if visible:
+                    sb.setValue(keep)
+            except RuntimeError:
+                pass
+
+        def pump():
+            if self.__dict__.get("_fy_job") is not job:    # началась другая сборка — эта больше не нужна
+                return
+            try:
+                next(job)
+            except StopIteration:
+                return finish()
+            except Exception as e:                         # noqa: BLE001
+                print("[ya] foryou staged:", e)
+                return finish()
+            QTimer.singleShot(14, pump)
+        pump()
+
+    def _fill_foryou_steps(self):
+        """Секции главной по порядку; yield — граница, на которой можно отдать кадр."""
         page = self.pages["foryou"]
         spoken = self.__dict__.get('_spoken_panel')
         if spoken is not None:
@@ -4406,11 +4730,15 @@ class YaShell(QWidget):
             except RuntimeError:
                 spoken = self._spoken_panel = None
         hero = self.__dict__.get("_fy_hero")
+        show = self.__dict__.get("_fy_show")                   # Phantom: витрина (баннер + две карточки)
         try:                                           # баннер «Моя волна» переживает пересборку: его туманность
-            if hero is not None:                       # на видеокарте создавалась заново (~150 мс на переходе);
-                page.v.removeWidget(hero)              # родитель тот же — без пересоздания контекста OpenGL
+            if show is not None:                       # на видеокарте создавалась заново (~150 мс на переходе);
+                page.v.removeWidget(show)              # родитель тот же — без пересоздания контекста OpenGL
+            elif hero is not None:
+                page.v.removeWidget(hero)
         except RuntimeError:
             hero = self._fy_hero = None
+            show = self._fy_show = None
         page.clear()
         w = self.win
         lib = w.library
@@ -4420,7 +4748,15 @@ class YaShell(QWidget):
         nick = str(w.profile.get("nickname") or "").strip()
         h = QLabel(f"{hello}, {nick}" if nick and nick != "user" else hello); h.setObjectName("YaH1")
         page.v.addWidget(h)
-        sub = QLabel("Подборки, тренды и то, что слушают друзья"); sub.setObjectName("YaSub")
+        sub_text = "Подборки, тренды и то, что слушают друзья"
+        try:                                           # подзаголовок — про вас: кого вы сейчас слушаете чаще всего
+            import ya_foryou
+            fav = ya_foryou.now_artists(w, 3)
+            if fav:
+                sub_text = "Сейчас у вас в ушах: " + ", ".join(fav)
+        except Exception as e:                         # noqa: BLE001
+            print("[ya] now artists:", e)
+        sub = QLabel(sub_text); sub.setObjectName("YaSub")
         sub.setStyleSheet("font-size:13px;margin-bottom:10px;")
         page.v.addWidget(sub)
         try:                                           # живой баннер «▶ Моя волна» (туманность на C++)
@@ -4428,17 +4764,39 @@ class YaShell(QWidget):
                 from ya_wave import WaveHero
                 hero = self._fy_hero = WaveHero(w.engine)
                 hero.clicked.connect(lambda: self.start_wave("my"))
-            page.v.addWidget(hero)
+            import ph_kit
+            if ph_kit.on():                                    # витрина: волна + «Трек дня» и «Настроение дня»
+                if show is None:
+                    show = self._fy_show = ph_kit.Showcase(hero)
+                    show.a.clicked.connect(lambda: self.start_wave("track_day"))
+                    show.b.clicked.connect(lambda: self.start_wave("mood_day"))
+                import random as _rnd
+                rng = _rnd.Random(time.strftime("%Y-%m-%d"))
+                covs = [t.get("cover") for t in lib if t.get("cover")]
+                ca = rng.choice(covs) if covs else ""
+                cb = rng.choice(covs) if covs else ""
+                part = ("ночь" if hr < 5 else "утро" if hr < 12 else "день" if hr < 18 else "вечер")
+                show.a.set_data("Сегодня", "Трек дня", "То, что вы давно не слушали", ca)
+                show.b.set_data("Под настроение", "Настроение дня", f"Под {part} и погоду за окном", cb)
+                page.v.addWidget(show)
+                show.show()
+            else:
+                page.v.addWidget(hero)
             hero.show()
+            self._fit_fy_hero()
         except Exception as e:                         # noqa: BLE001
             print("[ya] wave hero:", e)
 
-        try:                                           # Echoes.NET: друзья сейчас слушают / открытые комнаты
-            self.pages["net"].add_friends_row(page)
+        try:                                           # «Продолжить слушать» — плитки в цвет обложек (ya_home)
+            import ya_home
+            items = ya_home.recent_items(self, 6)
+            if len(items) >= 2:
+                page.v.addWidget(section_title("Продолжить слушать"))
+                page.v.addWidget(ya_home.ContinueGrid(self, items))
         except Exception as e:                         # noqa: BLE001
-            print("[ya] net row:", e)
-        self._foryou_net(page)
+            print("[ya] continue:", e)
 
+        yield
         # подборки-миксы
         page.v.addWidget(section_title("Миксы и подборки"))
         row = card_row()
@@ -4482,6 +4840,7 @@ class YaShell(QWidget):
                 c.clicked.connect(lambda k=key: self.start_wave("mood", k))
         page.v.addWidget(row.widget_)
 
+        yield
         import native_spoken
         if spoken is None:
             spoken = self._spoken_panel = native_spoken.create(w)
@@ -4489,6 +4848,7 @@ class YaShell(QWidget):
             page.v.addWidget(spoken)
             spoken.show()
 
+        yield
         # плейлисты
         pls = [n for n in w.playlists if n not in AUTO_PLAYLISTS or n == "Настроение дня"]
         if pls:
@@ -4501,6 +4861,7 @@ class YaShell(QWidget):
                 c.clicked.connect(lambda n=n: self.open_playlist(n))
             page.v.addWidget(row.widget_)
 
+        yield
         # исполнители
         arts = {}
         for a, tracks in _artist_index(lib).groups():
@@ -4515,6 +4876,7 @@ class YaShell(QWidget):
                 c.clicked.connect(lambda a=a: self.open_artist(a))
             page.v.addWidget(row.widget_)
 
+        yield
         # недавно добавленные
         if lib:
             page.v.addWidget(section_title("Недавно добавленные"))
@@ -4526,6 +4888,16 @@ class YaShell(QWidget):
                 c.clicked.connect(lambda i=idx_map[str(t.get("path", ""))]: self.win._play_index(i, "library"))
             page.v.addWidget(row.widget_)
 
+        # тренды и рекомендации из сети, затем Echoes.NET: музыка — выше, приглашение в соцсеть — ниже
+        yield
+        yield from self._foryou_net_steps(page)
+        yield
+        try:                                           # Echoes.NET: друзья сейчас слушают / открытые комнаты
+            self.pages["net"].add_friends_row(page)
+        except Exception as e:                         # noqa: BLE001
+            print("[ya] net row:", e)
+
+        yield
         # давно не слушали
         hist = w.settings.get("play_history", {})
         old = sorted(lib, key=lambda t: hist.get(str(t.get("path", "")), {}).get("last", "0"))[:30]
@@ -4537,11 +4909,33 @@ class YaShell(QWidget):
             page.v.addWidget(lv.section_widget())
         page.v.addStretch(1)
 
+    def _fit_fy_hero(self):
+        """Баннер «Моя волна» на главной — не выше трети окна: в невысоком окне под ним должна быть видна музыка."""
+        hero = self.__dict__.get("_fy_hero")
+        if hero is None:
+            return
+        try:
+            want = max(140, min(250, int(self.height() * 0.27)))
+            show = self.__dict__.get("_fy_show")
+            if show is not None and show.parent() is not None:
+                want = max(220, min(300, int(self.height() * 0.32)))
+                if show.height() != want:
+                    show.set_height(want)
+            elif hero.height() != want:
+                hero.setFixedHeight(want)
+        except RuntimeError:
+            self._fy_hero = None
+
     # ── «Для вас»: тренды и рекомендации по всей медиатеке (ya_foryou) ── #
 
     FY_PL = "⁣foryou"                                 # скрытая очередь: тренды и рекомендации играют потоком
 
     def _foryou_net(self, page):
+        """Тренды и рекомендации на главной — сразу целиком (по частям — _foryou_net_steps)."""
+        for _ in YaShell._foryou_net_steps(self, page):
+            pass
+
+    def _foryou_net_steps(self, page):
         import ya_foryou as F
         tt = F.taste(self.win)
         cache = F.load_cache()
@@ -4570,13 +4964,6 @@ class YaShell(QWidget):
                 self.win._ui_bridge.call.emit(done)
             import threading as _th
             _th.Thread(target=work, daemon=True, name="foryou-net").start()
-
-        now = [a for a, _ in tt["now"][:5]]
-        if now:
-            lbl = QLabel("Сейчас вы чаще всего слушаете: " + ", ".join(now))
-            lbl.setObjectName("YaSub")
-            lbl.setWordWrap(True)
-            page.v.addWidget(lbl)
 
         if not trends and not recs:
             page.v.addWidget(section_title("Тренды и рекомендации"))
@@ -4610,6 +4997,36 @@ class YaShell(QWidget):
             page.v.addWidget(row.widget_)
             FB.bind(self, row, pairs, genre)
 
+        if trends:
+            track_row("Тренды · Чарт России", trends.get("ru") or [], rank=False)
+            yield
+            track_row("Тренды · Мировой чарт", trends.get("world") or [], rank=False)
+            yield
+            try:                                               # где эти треки на YouTube — заранее, в простое
+                import stream_core
+                warm = [stream_core.make_track(t) for t in ((trends.get("ru") or [])[:8] + (trends.get("world") or [])[:8])]
+                QTimer.singleShot(4000, lambda w=warm: self.win.streams.warm_pages(w))
+            except Exception as e:                             # noqa: BLE001
+                print("[stream] warm:", e)
+        if recs:
+            arts = recs.get("artists") or []
+            if arts:
+                page.v.addWidget(section_title("Исполнители для вас"))
+                row = card_row()
+                for a in arts:
+                    c = row.card(a["name"], "похож на " + " и ".join(a.get("because") or []), "", 130, circle=True)
+                    c.clicked.connect(lambda n=a["name"]: self.open_artist(n))
+                    self._fy_cover(c, a.get("pic", ""))
+                page.v.addWidget(row.widget_)
+            yield
+            track_row("Треки для вас", recs.get("tracks") or [])
+            yield
+            track_row("Ещё от ваших исполнителей — этого нет в коллекции", recs.get("more") or [])
+            yield
+            for g in recs.get("genres") or []:
+                track_row(f"Новое в жанре «{g['name']}» · {int(round(g['share'] * 100))} % вашей коллекции",
+                          g.get("tracks") or [], genre=g["name"])
+                yield
         ups, downs = FB.counts(fbs)
         if ups or downs:
             hint = QLabel(f"Лента учитывает ваши оценки: 👍 {ups} · 👎 {downs}. Наведите на карточку или нажмите "
@@ -4633,31 +5050,6 @@ class YaShell(QWidget):
             hr.addWidget(rst)
             hr.addStretch(1)
             page.v.addLayout(hr)
-
-        if trends:
-            track_row("Тренды · Чарт России", trends.get("ru") or [], rank=False)
-            track_row("Тренды · Мировой чарт", trends.get("world") or [], rank=False)
-            try:                                               # где эти треки на YouTube — заранее, в простое
-                import stream_core
-                warm = [stream_core.make_track(t) for t in ((trends.get("ru") or [])[:8] + (trends.get("world") or [])[:8])]
-                QTimer.singleShot(4000, lambda w=warm: self.win.streams.warm_pages(w))
-            except Exception as e:                             # noqa: BLE001
-                print("[stream] warm:", e)
-        if recs:
-            arts = recs.get("artists") or []
-            if arts:
-                page.v.addWidget(section_title("Исполнители для вас"))
-                row = card_row()
-                for a in arts:
-                    c = row.card(a["name"], "похож на " + " и ".join(a.get("because") or []), "", 130, circle=True)
-                    c.clicked.connect(lambda n=a["name"]: self.open_artist(n))
-                    self._fy_cover(c, a.get("pic", ""))
-                page.v.addWidget(row.widget_)
-            track_row("Треки для вас", recs.get("tracks") or [])
-            track_row("Ещё от ваших исполнителей — этого нет в коллекции", recs.get("more") or [])
-            for g in recs.get("genres") or []:
-                track_row(f"Новое в жанре «{g['name']}» · {int(round(g['share'] * 100))} % вашей коллекции",
-                          g.get("tracks") or [], genre=g["name"])
 
     def _fy_cover(self, card, url):
         if not url:
@@ -5390,7 +5782,23 @@ class YaShell(QWidget):
         if np_ is None:
             from now_playing import NowPlaying
             np_ = self._now_playing = NowPlaying(self)
+        self.close_scene(instant=True)
         np_.open(mode or "cover")                              # обложка — «Сейчас играет», кнопка текста — «Текст»
+
+    # ── «Сцена»: текст с карточками во всё окно (scene_mode.py) ── #
+
+    def open_scene(self):
+        sc_ = self.__dict__.get("_scene")
+        if sc_ is None:
+            from scene_mode import SceneMode
+            sc_ = self._scene = SceneMode(self)
+        self.close_now_playing(instant=True)
+        sc_.open()
+
+    def close_scene(self, instant=False):
+        sc_ = self.__dict__.get("_scene")
+        if sc_ is not None:
+            sc_.close_mode(instant=instant)
 
     def close_now_playing(self, instant=False):
         np_ = self.__dict__.get("_now_playing")
@@ -6371,7 +6779,12 @@ class YaShell(QWidget):
             if data_changed:
                 self.l_panel.load(lines, bool(getattr(lv, "_has_timings", False)))
                 self._refine_words(lines)
-            self.l_panel.set_style(lv._text_panel._st, lv._text_panel._st_family)
+            st = lv._text_panel._st
+            if self.__dict__.get("ph") is not None:            # Phantom: свой вид текста (ph_shell.lyrics_style)
+                import ph_panels
+                import ph_shell
+                st = ph_shell.lyrics_style(st, ph_panels.ph_settings(self.win))
+            self.l_panel.set_style(st, lv._text_panel._st_family)
         ai = getattr(self.win, "_ai", None)
         running = bool(ai and ai["running"])
         self.l_ai.setVisible(running or (bool(lines) and not getattr(lv, "_has_timings", False)))
@@ -6412,7 +6825,16 @@ class YaShell(QWidget):
     def _build_settings(self):
         """Настройки по разделам (ya_settings.SettingsHub): слева — разделы, сверху — умный поиск."""
         from ya_settings import SettingsHub
-        hub = SettingsHub(Page, ya_icon, YELLOW)
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None:                                    # Phantom: те же настройки, значки Lucide, подсказки
+            import ph_panels
+            hub = SettingsHub(Page, ph_panels.hub_icon, YELLOW, compact=True, chip_factory=ph_panels.hub_chip)
+            hub.hints = ph_panels.HUB_HINTS
+            for cat, title, w, keys in ph_panels.settings_cards(ph_):   # настройки вида Phantom — первыми
+                hub.v.addWidget(w)
+                hub.add(cat, title, w, keys)
+        else:
+            hub = SettingsHub(Page, ya_icon, YELLOW)
         self.settings_hub = hub
         from ya_sound_panel import SoundPanel
         sound_controls=SoundPanel(self,embedded=True);hub.v.addWidget(sound_controls)
@@ -6438,6 +6860,9 @@ class YaShell(QWidget):
         # ── Инструменты слушателя ──
         tools_card = AmbientFrame(); tools_card.setObjectName("ListenerCard")
         tools_card.setStyleSheet("QFrame#ListenerCard{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #393018,stop:1 #25202c);border:1px solid #66542a;border-radius:18px;}")
+        if ph_ is not None:                                    # Phantom: стекло вместо коричнево-жёлтой плашки
+            tools_card.setStyleSheet("QFrame#ListenerCard{background:rgba(255,255,255,0.045);"
+                                     "border:1px solid rgba(255,255,255,0.065);border-radius:20px;}")
         tools_layout = QVBoxLayout(tools_card)
         tools_layout.setContentsMargins(22,18,22,18)
         title = QLabel("Инструменты слушателя"); title.setStyleSheet("font-size:22px;font-weight:800;background:transparent;")
@@ -6484,6 +6909,9 @@ class YaShell(QWidget):
         hub.v.addWidget(holder)
         hub.v.addStretch(1)
         QTimer.singleShot(0, hub.refresh)
+        if ph_ is not None:                                    # Phantom: без повторов и неуместного
+            import ph_panels
+            QTimer.singleShot(0, lambda: ph_panels.tidy_hub(hub))
         return hub
 
     def _build_inline_tools(self, hub):
@@ -6696,12 +7124,13 @@ class YaShell(QWidget):
         t = QLabel("Вид Echoes Music")
         t.setStyleSheet("font-size:14px;font-weight:700;background:transparent;")
         v.addWidget(t)
-        d = QLabel("Новый вид: плейлисты и поиск сверху, разделы на боковой панели, плеер снизу, Echoes.NET в углу. "
-                   "Legacy — прежний вид ECHOES: всё в колонке слева.")
+        d = QLabel("Phantom — монохромный вид Phantom Audio: обложка и плеер слева, текст справа, разделы — за "
+                   "значком планеты. Новый вид: плейлисты и поиск сверху, разделы на боковой панели, плеер снизу, "
+                   "Echoes.NET в углу. Legacy — прежний вид ECHOES: всё в колонке слева.")
         d.setObjectName("YaSub")
         d.setWordWrap(True)
         v.addWidget(d)
-        cur = win.settings.get("ya_layout", "new")
+        cur = win.settings.get("ya_layout", "phantom")
         side = win.settings.get("ya_side", "right")
 
         def apply(**kw):
@@ -6713,7 +7142,7 @@ class YaShell(QWidget):
             import ya_skin
             QTimer.singleShot(0, lambda: ya_skin.reskin(win))
         r1 = QHBoxLayout()
-        for key, text in (("phantom", "Phantom"), ("new", "Новый вид"), ("classic", "Legacy — старый вид ECHOES")):
+        for key, text in (("phantom", "Phantom (по умолчанию)"), ("new", "Прежний вид Echoes"), ("classic", "Legacy — старый вид ECHOES")):
             b = chip(text)
             b.setChecked(cur == key)
             b.clicked.connect(lambda _=False, key=key: apply(ya_layout=key) if key != cur else None)
@@ -7161,6 +7590,49 @@ class ArtistHeader(QWidget):
         self.btn_row = QHBoxLayout()
         self.btn_row.setSpacing(10)
         lay.addLayout(self.btn_row)
+        # ряд кнопок не задаёт минимальную ширину всей страницы: иначе в узком окне страница шире
+        # видимой области и справа обрезаются кнопки, статистика и строки треков
+        self.setMinimumWidth(1)
+
+    def fit_buttons(self):
+        """Узкое окно: подписи кнопок с конца ряда прячутся (остаётся значок, подпись — в подсказке)."""
+        btns = []
+        for i in range(self.btn_row.count()):
+            w = self.btn_row.itemAt(i).widget()
+            if isinstance(w, QPushButton):
+                full = w.property("_full")
+                if full is None and w.text().strip():
+                    w.setProperty("_full", w.text())
+                    full = w.text()
+                if full:
+                    if w.text() != full:
+                        w.setText(full)
+                    if not w.toolTip():
+                        w.setToolTip(full.strip())
+                btns.append(w)
+            elif w is not None:
+                btns.append(w)
+        if not btns:
+            return
+        m = self.layout().contentsMargins()
+        avail = self.width() - m.left() - m.right()
+        sp = self.btn_row.spacing()
+        total = sum(b.sizeHint().width() for b in btns) + sp * (len(btns) - 1)
+        for b in reversed(btns[1:]):
+            if total <= avail:
+                break
+            if isinstance(b, QPushButton) and b.property("_full"):
+                before = b.sizeHint().width()
+                b.setText("")
+                total += b.sizeHint().width() - before
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.fit_buttons()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.fit_buttons()
 
     def set_loading(self, on):
         self._loading = on
@@ -7176,6 +7648,30 @@ class ArtistHeader(QWidget):
         self.update()
 
     def _make_banner(self, W, H):
+        import ph_kit
+        if ph_kit.on():                                        # Phantom: стекло + размытое фото, низ темнее
+            import ph_style as ph
+            dpr = self.devicePixelRatioF() or 1.0
+            pm = QPixmap(int(W * dpr), int(H * dpr))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            q = QPainter(pm)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing)
+            r = QRectF(0, 0, W, H)
+            ph.paint_surface(q, r, "card", float(ph.px(22)))
+            if self.picture:
+                import blur_fx
+                q.setClipPath(ph.surface_path(r, float(ph.px(22))))
+                q.setOpacity(.75)
+                q.drawImage(r, blur_fx.blurred_cover(self.picture, max(8, int(W * dpr / 3)), max(8, int(H * dpr / 3)),
+                                                     10.0, dim=.45, sat=1.1))
+                q.setOpacity(1.0)
+                g = QLinearGradient(0, 0, 0, H)
+                g.setColorAt(0, QColor(0, 0, 0, 0))
+                g.setColorAt(1, QColor(0, 0, 0, 120))
+                q.fillRect(r, g)
+            q.end()
+            return pm
         import ya_decor                                        # размытое фото исполнителя в шапке
         pm = ya_decor.artist_banner(W, H, self.picture)
         if pm is not None:
@@ -7192,10 +7688,15 @@ class ArtistHeader(QWidget):
         if self._banner is None or self._banner_key != key:
             self._banner = self._make_banner(W, H)
             self._banner_key = key
-        clip = QPainterPath(); clip.addRoundedRect(QRectF(0, 0, W, H + 20), 16, 16)
-        p.setClipPath(clip)
-        p.drawPixmap(0, 0, self._banner)
-        p.setClipping(False)
+        import ph_kit
+        phantom = ph_kit.on()
+        if phantom:
+            p.drawPixmap(0, 0, self._banner)
+        else:
+            clip = QPainterPath(); clip.addRoundedRect(QRectF(0, 0, W, H + 20), 16, 16)
+            p.setClipPath(clip)
+            p.drawPixmap(0, 0, self._banner)
+            p.setClipping(False)
         # фото
         ph = QRectF(32, H - 222, 190, 190)
         import ya_decor
@@ -7213,8 +7714,15 @@ class ArtistHeader(QWidget):
             p.drawEllipse(ph)
         x = 250
         p.setPen(QColor(255, 255, 255, 170))
-        p.setFont(ya_font(12, QFont.Weight.DemiBold))
-        p.drawText(QRectF(x, H - 220, W - x - 20, 18), Qt.AlignmentFlag.AlignLeft, self.kind)
+        if phantom:                                            # кикер Phantom: капс, разрядка
+            import ph_style as _ph
+            p.setFont(_ph.kicker_font())
+            p.setPen(_ph.qcolor(_ph.TEXT_SECONDARY))
+            p.drawText(QRectF(x, H - 216, W - x - 20, 18), Qt.AlignmentFlag.AlignLeft,
+                       {"Исполнитель": "ARTIST"}.get(self.kind, self.kind.upper()))
+        else:
+            p.setFont(ya_font(12, QFont.Weight.DemiBold))
+            p.drawText(QRectF(x, H - 220, W - x - 20, 18), Qt.AlignmentFlag.AlignLeft, self.kind)
         f = ya_font(int(max(34, min(60, W * 0.045))), QFont.Weight.Black)
         p.setFont(f)
         p.setPen(QColor(255, 255, 255))
@@ -7225,7 +7733,8 @@ class ArtistHeader(QWidget):
         stats = self.stats
         if self._loading:
             stats = "Загружаем данные с серверов" + "." * (1 + int((time.monotonic() - self._t0) * 3) % 3)
-        p.drawText(QRectF(x, H - 122, W - x - 20, 20), Qt.AlignmentFlag.AlignLeft, stats)
+        p.drawText(QRectF(x, H - 122, W - x - 20, 20), Qt.AlignmentFlag.AlignLeft,
+                   p.fontMetrics().elidedText(stats, Qt.TextElideMode.ElideRight, int(W - x - 20)))
         # индикаторы серверов (справа сверху)
         p.setFont(ya_font(11, QFont.Weight.DemiBold))
         bx = W - 20
@@ -7491,9 +8000,12 @@ class ArtistPage(Page):
 
         def style_fb(btn=fb, n=art_name):
             on = _AF.is_followed(self.shell.win, n)
-            btn.setText("  Вы подписаны" if on else "  Подписаться")
+            btn.setProperty("_full", "  Вы подписаны" if on else "  Подписаться")
+            btn.setText(btn.property("_full"))
             btn.setIcon(ya_icon("check" if on else "plus", 18))
             btn.setToolTip("Отписаться" if on else "Новые релизы исполнителя — уведомлениями, он появится в «Подписках»")
+            if btn.parentWidget() is not None:
+                hdr.fit_buttons()
         style_fb()
         fb.clicked.connect(lambda _=False, n=art_name: (_AF.set_follow(self.shell.win, n,
                                                                        not _AF.is_followed(self.shell.win, n)),
@@ -7570,10 +8082,12 @@ class ArtistPage(Page):
                     "picture": "", "url": r.get("picture_url", "")} for r in (d.get("ytm_related") or [])]
         if rel:
             bv.addWidget(section_title("Поклонникам также нравится"))
-            row = HRow()
+            import ph_kit
+            row = ph_kit.PhRow() if ph_kit.on() else HRow()
+            card_cls = ph_kit.make_card_class() if ph_kit.on() else Card
             missing = []
             for r in rel[:14]:
-                c = Card(r["name"], r["sub"], r["picture"], 150, circle=True, seed=r["name"])
+                c = card_cls(r["name"], r["sub"], r["picture"], 150, circle=True, seed=r["name"])
                 c.clicked.connect(lambda n=r["name"]: self.shell.open_artist(n))
                 row.add(c)
                 if not r["picture"] and r["url"]:
@@ -7582,8 +8096,93 @@ class ArtistPage(Page):
             if missing:
                 from ya_artist_about import load_pictures
                 load_pictures(self, missing)
+        import ph_kit
+        if ph_kit.on():
+            self._ph_nav(body)
         self.v.addStretch(1)
         self.verticalScrollBar().setValue(0)
+
+    # ── Phantom: вкладки разделов под шапкой — щелчок плавно прокручивает к разделу, при прокрутке — подсветка ── #
+    PH_SECTIONS = (("local", "В коллекции", ("В вашей коллекции",)), ("top", "Популярное", ("Популярные треки",)),
+                   ("disco", "Дискография", ()), ("about", "О нём", ("Об исполнителе",)),
+                   ("similar", "Похожие", ("Поклонникам также нравится",)))
+
+    def _ph_nav(self, body):
+        import ph_widgets as pw
+        from ya_online import DiscographyBlock
+        anchors = {}
+        lay = body.layout()
+        for i in range(lay.count()):
+            w = lay.itemAt(i).widget()
+            if w is None:
+                continue
+            if isinstance(w, DiscographyBlock):
+                anchors.setdefault("disco", w)
+                continue
+            texts = {lb.text() for lb in w.findChildren(QLabel)}
+            for key, _t, names in self.PH_SECTIONS:
+                if any(n in texts for n in names):
+                    anchors.setdefault(key, w)
+        items = [(k, t, "") for k, t, _n in self.PH_SECTIONS if k in anchors]
+        if len(items) < 2:
+            return
+        seg = pw.PhSegments(items, stretch=False)
+        holder = QWidget()
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(32, 10, 32, 0)
+        hl.addWidget(seg)
+        hl.addStretch(1)
+        self.v.insertWidget(self.v.indexOf(body), holder)
+        self._ph_anchors = anchors
+        self._ph_seg = seg
+        seg.changed.connect(self._ph_goto)
+        if not self.__dict__.get("_ph_sync_on"):
+            self._ph_sync_on = True
+            self.verticalScrollBar().valueChanged.connect(self._ph_sync)
+
+    def _ph_y(self, w) -> int:
+        try:
+            return w.mapTo(self.widget(), QPoint(0, 0)).y()
+        except RuntimeError:
+            return 0
+
+    def _ph_goto(self, key):
+        w = self.__dict__.get("_ph_anchors", {}).get(key)
+        if w is None:
+            return
+        from PyQt6.QtCore import QPropertyAnimation, QEasingCurve
+        import ph_style as _ph
+        sb = self.verticalScrollBar()
+        to = max(0, min(sb.maximum(), self._ph_y(w) - 8))
+        a = self.__dict__.get("_ph_anim")
+        if a is None:
+            a = self._ph_anim = QPropertyAnimation(sb, b"value", self)
+            a.setEasingCurve(QEasingCurve.Type.OutCubic)
+        a.stop()
+        d = _ph.duration(460)
+        if d <= 0:
+            sb.setValue(to)
+            return
+        self._ph_jump = True
+        a.setDuration(d)
+        a.setStartValue(sb.value())
+        a.setEndValue(to)
+        a.finished.connect(lambda: setattr(self, "_ph_jump", False))
+        a.start()
+
+    def _ph_sync(self, v):
+        if self.__dict__.get("_ph_jump"):
+            return
+        seg = self.__dict__.get("_ph_seg")
+        if seg is None:
+            return
+        cur = None
+        for key, w in self.__dict__.get("_ph_anchors", {}).items():
+            if self._ph_y(w) - 40 <= v:
+                if cur is None or self._ph_y(w) >= self._ph_y(self._ph_anchors[cur]):
+                    cur = key
+        if cur and cur != seg.current():
+            seg.set_current(cur)
 
     # ── действия ── #
 

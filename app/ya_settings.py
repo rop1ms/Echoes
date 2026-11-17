@@ -19,8 +19,8 @@ import difflib
 import re
 
 from PyQt6.QtCore import Qt, QTimer, QSize
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget, QAbstractButton,
-                             QButtonGroup, QComboBox)
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+                             QAbstractButton, QButtonGroup, QComboBox)
 
 CATEGORIES = (("look", "Оформление", "palette"), ("sound", "Звук", "eq"), ("play", "Воспроизведение", "play"),
               ("lyrics", "Тексты песен", "lyrics"), ("library", "Медиатека", "album"),
@@ -164,16 +164,78 @@ def section_cat(title: str) -> str:
     return "other"
 
 
-class SettingsHub(QWidget):
-    """Страница настроек: разделы слева, поиск сверху."""
+class _Flow(QLayout):
+    """Раскладка «в строку с переносом» (пилюли разделов в узкой панели настроек)."""
 
-    def __init__(self, page_cls, icon_fn, accent="#ffdb1a"):
+    def __init__(self, parent=None, gap=6):
+        super().__init__(parent)
+        self._items = []
+        self._gap = gap
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        return self._place(w, apply=False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._place(rect.width(), apply=True, x0=rect.x(), y0=rect.y())
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        from PyQt6.QtCore import QSize as _S
+        w = max((it.sizeHint().width() for it in self._items), default=0)
+        return _S(w, self._place(max(w, 1), apply=False))
+
+    def _place(self, width, apply, x0=0, y0=0):
+        from PyQt6.QtCore import QRect as _R
+        x, y, row_h = 0, 0, 0
+        for it in self._items:
+            if it.widget() is not None and it.widget().isHidden():
+                continue
+            sz = it.sizeHint()
+            if x and x + sz.width() > width:
+                x, y, row_h = 0, y + row_h + self._gap, 0
+            if apply:
+                it.setGeometry(_R(x0 + x, y0 + y, sz.width(), sz.height()))
+            x += sz.width() + self._gap
+            row_h = max(row_h, sz.height())
+        return y + row_h
+
+
+class SettingsHub(QWidget):
+    """Страница настроек: разделы слева, поиск сверху. compact — для узкой панели (вид Phantom): поиск сверху,
+    под ним разделы пилюлями в несколько строк (chip_factory(текст, значок) делает пилюлю)."""
+
+    def __init__(self, page_cls, icon_fn, accent="#ffdb1a", compact=False, chip_factory=None):
         super().__init__()
+        if compact:
+            self._init_compact(page_cls, icon_fn, accent, chip_factory)
+            return
         self.setObjectName("YaPage")
         self.blocks: list[Block] = []
         self.containers: list = []                             # страницы правой панели: пустые — прятать целиком
         self.cat = "look"
         self.accent = accent
+        self.hints: dict = {}                                  # раздел → что в нём настраивается (строка под поиском)
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -228,6 +290,47 @@ class SettingsHub(QWidget):
         self.page = page_cls(margins=(12, 8, 32, 24))
         right.addWidget(self.page, 1)
         root.addLayout(right, 1)
+        self.v = self.page.v
+        self._deb = QTimer(self)
+        self._deb.setSingleShot(True)
+        self._deb.setInterval(160)
+        self._deb.timeout.connect(self._do_search)
+        self.nav_btns["look"].setChecked(True)
+
+    def _init_compact(self, page_cls, icon_fn, accent, chip_factory):
+        self.setObjectName("YaPage")
+        self.blocks: list[Block] = []
+        self.containers: list = []
+        self.cat = "look"
+        self.accent = accent
+        self.hints: dict = {}
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+        self.search = QLineEdit()
+        self.search.setObjectName("PhSearch")
+        self.search.setPlaceholderText("Найти настройку: «эквалайзер», «фон», «басы», «место на диске»…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _t: self._deb.start())
+        root.addWidget(self.search)
+        nav = QWidget()
+        flow = _Flow(nav, 6)
+        self.nav_btns = {}
+        grp = self._grp = QButtonGroup(self)
+        for key, title, ic in CATEGORIES:
+            b = chip_factory(title, icon_fn(ic, 16, "")) if chip_factory else QPushButton(title)
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, k=key: self.select(k))
+            grp.addButton(b)
+            flow.addWidget(b)
+            self.nav_btns[key] = b
+        root.addWidget(nav)
+        self.info = QLabel("")
+        self.info.setObjectName("YaSub")
+        self.info.setWordWrap(True)
+        root.addWidget(self.info)
+        self.page = page_cls(margins=(0, 4, 8, 24))
+        root.addWidget(self.page, 1)
         self.v = self.page.v
         self._deb = QTimer(self)
         self._deb.setSingleShot(True)
@@ -332,7 +435,7 @@ class SettingsHub(QWidget):
             on = b.always or b.cat == cat
             self._show(b, on)
             shown += on and not b.always
-        self.info.setText("")
+        self.info.setText(self.hints.get(cat, ""))
         self.nav_btns["other"].setVisible(any(b.cat == "other" for b in self.blocks))
         self._sync_containers()
         self.page.verticalScrollBar().setValue(0)

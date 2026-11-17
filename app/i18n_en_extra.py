@@ -3593,3 +3593,31 @@ EXACT.update({
     'Реакция на этот момент': 'React to this moment',
     'Звук и эффекты': 'Sound and effects',
 })
+
+# главная: «Продолжить слушать»
+EXACT.update({'Продолжить слушать': 'Jump back in'})
+TEMPLATES.update({'Сейчас у вас в ушах: {0}': 'In your ears right now: {0}'})
+
+# «Сцена»: текст с карточками во всё окно (scene_mode.py)
+EXACT.update({
+    'Сцена': 'Scene',
+    'Текст с живыми карточками к каждой строке — на всё окно': 'Lyrics with live cards for every line — full window',
+    'У этой песни нет текста с таймкодами': 'This song has no time-synced lyrics',
+    'Текст начнётся со вступлением': 'Lyrics start after the intro',
+    'сейчас': 'now',
+})
+EXACT.update({
+    'Правый клик — своя гифка или картинка': 'Right-click — your own GIF or picture',
+    'Своя гифка или картинка…': 'Your own GIF or picture…',
+    'Убрать свою картинку': 'Remove your picture',
+    'Вернуть обложку целиком': 'Show the whole cover',
+    'Вырезать персонажа с обложки': 'Cut the character out of the cover',
+    'Вырезать фон у картинки': 'Remove the picture background',
+    'Не вырезать фон': 'Keep the background',
+    'Искать гифку для этого трека': 'Look for a GIF for this track',
+    'Не искать гифку для этого трека': "Don't look for a GIF for this track",
+    'Найти гифку заново': 'Find another GIF',
+    'Гифка или картинка для этого трека': 'GIF or picture for this track',
+    'Картинки и гифки (*.gif *.webp *.png *.jpg *.jpeg)': 'Pictures and GIFs (*.gif *.webp *.png *.jpg *.jpeg)',
+})
+EXACT.update({'Выбрать гифку из поиска…': 'Pick a GIF from search…'})

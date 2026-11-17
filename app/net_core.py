@@ -1213,7 +1213,8 @@ class NetNode:
             if have:
                 await p.send(have)
             from net_radio_auth import load as radio_permits
-            if self._staff_load().get("mods") or self._staff_load()["acts"] or radio_permits(self):
+            import net_sponsor
+            if self._staff_load().get("mods") or self._staff_load()["acts"] or radio_permits(self) or                     net_sponsor.payload(self):
                 await p.send(self._staff_payload())
             mine = [{"target": r["target"], "reason": r["reason"]} for r in self.my_reports()[:200]]
             if mine:
@@ -2573,6 +2574,9 @@ class NetNode:
         await self.nostr.subscribe("upd", [{"kinds": [30078], "#t": ["echoes-update"], "limit": 20}], self._nostr_update)
         await self.nostr.subscribe("staff", [{"kinds": [30078], "#t": ["echoes-staff"], "limit": 20}], self._nostr_staff)
         await self.nostr.subscribe('radio_permits',[{'kinds':[30078],'#t':['echoes-radio-permit'],'limit':500}],self._nostr_radio_permit)
+        import net_sponsor                                     # спонсоры, их посты, проверка, ссылки на донаты
+        await self.nostr.subscribe("sponsors", [{"kinds": [30078], "#t": list(net_sponsor.TAGS), "limit": 800}],
+                                   self._nostr_sponsor)
         await self.nostr.subscribe("modact", [{"kinds": [30078], "#t": ["echoes-modact"], "limit": 3000}],
                                    self._nostr_modact)
         asyncio.ensure_future(self._nostr_announce_loop())
@@ -3865,7 +3869,9 @@ class NetNode:
         acts = sorted(st["acts"].values(), key=lambda a: -float(a.get("ts") or 0))[:300]
         from net_radio_auth import load
         permits=sorted(load(self).values(),key=lambda p:-p['ts'])[:300]
-        return {"t": "staff", "mods": st.get("mods"), "acts": acts,'radio_permits':permits}
+        import net_sponsor
+        return {"t": "staff", "mods": st.get("mods"), "acts": acts,'radio_permits':permits,
+                "sponsor": net_sponsor.payload(self)}
 
     def _staff_in(self, m):
         if m.get("mods"):
@@ -3874,6 +3880,17 @@ class NetNode:
             self._take_act(a)
         from net_radio_auth import take
         for decision in (m.get('radio_permits') or [])[:300]:take(self,decision)
+        import net_sponsor
+        net_sponsor.take_many(self, m.get("sponsor"))
+
+    def _nostr_sponsor(self, ev):
+        if not self._ev_ok(ev) or len(ev.get("content") or "") > 50000:
+            return
+        import net_sponsor
+        try:
+            net_sponsor.take(self, json.loads(ev.get("content") or "{}"))
+        except (ValueError, TypeError):
+            pass
 
     def _nostr_radio_permit(self,ev):
         if not self._ev_ok(ev) or len(ev.get('content') or '')>3000:return

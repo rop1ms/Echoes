@@ -29,6 +29,24 @@ def track_key(path):
         return ""
 
 
+
+def _ph() -> bool:
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def _tone(color: str) -> str:
+    """Вид Phantom — монохром: цвет уровня становится серым той же яркости (уровни различимы, цвета нет)."""
+    if not _ph():
+        return color
+    q = QColor(color)
+    v = max(40, min(245, int(.299 * q.red() + .587 * q.green() + .114 * q.blue())))
+    import ph_style                                            # серый с оттенком картинки фона
+    return ph_style.tone(v).name()
+
 class TierTrackModel(QAbstractListModel):
     def __init__(self, page, tier_id, parent):
         super().__init__(parent)
@@ -69,8 +87,9 @@ class TrackTile(QStyledItemDelegate):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         focused = track_key(t.get("path", "")) == page.selected
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        painter.setPen(QPen(QColor(Y.YELLOW), 2) if focused else QPen(QColor("#c3ad54"), 1) if selected else Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#302c1b" if focused else "#363020" if selected else "#232323"))
+        painter.setPen(QPen(QColor(Y.YELLOW), 2) if focused else QPen(QColor(_tone("#c3ad54")), 1) if selected
+                       else Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(_tone("#302c1b") if focused else _tone("#363020") if selected else "#232323"))
         painter.drawRoundedRect(r, 9, 9)
         cover = QRect(r.left() + 6, r.top() + 5, 30, 30)
         painter.drawPixmap(cover, Y.cover_pixmap(t.get("cover") or "", 30, 6,
@@ -132,7 +151,8 @@ class TierView(QListView):
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(MIME):
-            self.setStyleSheet("QListView{background:#29251a;border:2px solid #ffdb1a;border-radius:9px;outline:none;}")
+            self.setStyleSheet(f"QListView{{background:{_tone('#29251a')};border:2px solid {_tone('#ffdb1a')};"
+                               "border-radius:9px;outline:none;}")
             event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
 
@@ -212,6 +232,7 @@ class TierRow(QFrame):
 
     def configure(self, tier):
         name, color = (tier["name"], tier["color"]) if tier else ("Не оценено", "#3b3b3b")
+        color = _tone(color)
         q = QColor(color)
         light = .299*q.red() + .587*q.green() + .114*q.blue() > 150
         self.label.setText(name)
@@ -491,9 +512,9 @@ class MusicTierPage(QWidget):
             self.quick_rating.addItem(tier["name"], tier["id"])
             button = QPushButton(tier["name"])
             button.setToolTip("Оценить выбранный трек: " + tier["name"])
-            color = QColor(tier["color"])
+            color = QColor(_tone(tier["color"]))
             ink = "#101010" if color.lightness() > 150 else "#ffffff"
-            button.setStyleSheet(f"QPushButton{{background:{tier['color']};color:{ink};border-radius:9px;padding:7px 12px;font-weight:700;}}")
+            button.setStyleSheet(f"QPushButton{{background:{color.name()};color:{ink};border-radius:9px;padding:7px 12px;font-weight:700;}}")
             button.clicked.connect(lambda _=False, tid=tier["id"]: self.rate_selected(tid))
             self.rating_bar.addWidget(button)
         unrate = QPushButton("Убрать оценку")

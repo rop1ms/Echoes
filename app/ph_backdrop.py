@@ -35,6 +35,7 @@ import ph_style as ph
 
 _ARGB = QImage.Format.Format_ARGB32_Premultiplied
 DEFAULT_IMAGE = ph.ASSETS / "ph" / "background.jpg"
+ASSETS_VIDEO = ph.ASSETS / "ph" / "cover-video.mp4"      # встроенная видео-обложка Phantom
 ATMO_SCALE = 1 / 6          # слой вспышек и дыма — в 1/6 размера окна
 ATMO_MS = 250               # и обновляется 4 раза в секунду
 DUST_MS = 33                # пылинки — 30 кадров в секунду (как у Phantom)
@@ -287,6 +288,7 @@ class PhBackground(QWidget):
         if token != self._token:
             return
         self._image = img
+        ph.set_tint(image_tint(img))
         self._rebuild_static()
 
     # ── неподвижный слой ── #
@@ -555,6 +557,29 @@ def frozen_blur(widget: QWidget, blur: float = 6.0, dim: float = .55, saturation
                                          Qt.TransformationMode.SmoothTransformation))
     out.setDevicePixelRatio(dpr)
     return out
+
+
+def image_tint(img: QImage) -> QColor:
+    """Главный оттенок картинки фона: средний цвет с весом «насыщенность × яркость», насыщенность поднята,
+    яркость — светлая (для смешивания с серым). Серая картинка — почти белый (нейтрально)."""
+    if img is None or img.isNull():
+        return QColor(255, 255, 255)
+    small = img.scaled(16, 16, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    sr = sg = sb = sw = 0.0
+    for y in range(16):
+        for x in range(16):
+            c = small.pixelColor(x, y)
+            h, sat, v, _a = c.getHsvF()
+            w = max(0.0, sat) * v + .02
+            sr += c.redF() * w
+            sg += c.greenF() * w
+            sb += c.blueF() * w
+            sw += w
+    avg = QColor.fromRgbF(sr / sw, sg / sw, sb / sw)
+    h, sat, _v, _a = avg.getHsvF()
+    if h < 0 or sat < .06:
+        return QColor(255, 255, 255)
+    return QColor.fromHsvF(h, min(.55, sat * 1.6), 1.0)
 
 
 def default_image_path() -> Path | None:

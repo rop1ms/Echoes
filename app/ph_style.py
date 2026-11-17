@@ -119,6 +119,40 @@ def surface_alpha(strong: bool = False) -> float:
     return (SURFACE_STRONG_ALPHA if strong else SURFACE_ALPHA) * float(_CFG["card_opacity"])
 
 
+# Оттенок монохрома — из картинки фона (ph_backdrop считает его при каждой новой картинке): серое в волне,
+# тирлисте, дуэли чуть окрашено под фон. Белый — нейтрально.
+_TINT = [QColor(255, 255, 255)]
+
+
+def set_tint(c: QColor):
+    if QColor(c) == _TINT[0]:
+        return
+    _TINT[0] = QColor(c)
+    import sys
+    wave = sys.modules.get("ya_wave")                          # «Моя волна» на экране — перекрасить сразу
+    if wave is not None and hasattr(wave, "retint"):
+        wave.retint()
+
+
+def tint() -> QColor:
+    return QColor(_TINT[0])
+
+
+def tone(level: int, alpha: int = 255, k: float = .22) -> QColor:
+    """Серый яркости level (0..255), смешанный с оттенком фона на k (яркость сохраняется)."""
+    t = _TINT[0]
+    lum_t = max(1.0, .299 * t.red() + .587 * t.green() + .114 * t.blue())
+    f = level / lum_t
+    r, g, b = (min(255.0, c * f) for c in (t.red(), t.green(), t.blue()))
+    mix = (lambda c: int(round(level + (c - level) * k)))
+    return QColor(mix(r), mix(g), mix(b), alpha)
+
+
+def mono_scheme(k: float = .38) -> tuple:
+    """4 цвета туманности «Моей волны» в виде Phantom: ядро, середина, край, пятна — оттенок фона."""
+    return tuple(tone(v, k=k).name() for v in (255, 190, 112, 220))
+
+
 def motion_reduced() -> bool:
     return _CFG["motion"] == "reduce" or not _CFG["effects"]
 
@@ -169,6 +203,11 @@ def load_fonts() -> bool:
     sym = ASSETS / "EchoesSymbols.ttf"
     if sym.exists():
         QFontDatabase.addApplicationFont(str(sym))
+    # в Inter нет стрелок и части значков (→ ▾ ✓ ★): без замены Qt рисовал их квадратиками там, где в таблице
+    # стилей указан только Inter
+    from PyQt6.QtGui import QFont as _QF
+    for fam in FAMILIES[:5]:
+        _QF.insertSubstitutions(fam, ["Segoe UI", "Segoe UI Symbol", "ECHOES Symbols"])
     _FONTS_LOADED = ok
     return ok
 
@@ -380,17 +419,18 @@ QPushButton#PhPrimary {{ color:#050505; background:rgba(255,255,255,0.92); borde
 QPushButton#PhPrimary:hover {{ background:#ffffff; border-color:#ffffff; }}
 QPushButton#PhPrimary:pressed {{ background:rgba(255,255,255,0.84); }}
 QPushButton#PhSecondary, QToolButton#PhSecondary {{ color:{t1}; background:rgba(255,255,255,0.055); border:1px solid {l2}; }}
-QPushButton#PhSecondary:hover, QToolButton#PhSecondary:hover {{ background:rgba(255,255,255,0.10); border-color:{l3}; }}
-QPushButton#PhSecondary:pressed {{ background:rgba(255,255,255,0.07); }}
+QPushButton#PhSecondary:hover, QToolButton#PhSecondary:hover {{ border-color:{l3}; }}
+QPushButton#PhSecondary:pressed {{ }}
 QPushButton#PhSecondary:checked {{ background:rgba(255,255,255,0.12); border-color:{l3}; }}
 QPushButton#PhGhost {{ color:{t2}; background:transparent; border:1px solid transparent; }}
-QPushButton#PhGhost:hover {{ color:{t1}; background:rgba(255,255,255,0.055); }}
+QPushButton#PhGhost:hover {{ color:{t1}; }}
 QPushButton#PhDanger {{ color:{t1}; background:rgba(255,255,255,0.04); border:1px solid {l2}; }}
-QPushButton#PhDanger:hover {{ background:rgba(255,255,255,0.08); border-color:{l3}; }}
+QPushButton#PhDanger:hover {{ border-color:{l3}; }}
 QPushButton#PhPrimary:disabled, QPushButton#PhSecondary:disabled, QPushButton#PhGhost:disabled {{ color:{tg}; }}
+QPushButton#PhPrimary:disabled {{ color:rgba(5,5,5,0.55); background:rgba(255,255,255,0.55); border-color:rgba(255,255,255,0.55); }}
 QPushButton#PhSmall {{ min-height:{bx(28)}px; max-height:{bx(28)}px; padding:0 {px(10)}px; border-radius:{px(14)}px;
     color:{t1}; background:rgba(255,255,255,0.045); border:1px solid {l2}; }}
-QPushButton#PhSmall:hover {{ background:rgba(255,255,255,0.09); border-color:{l3}; }}
+QPushButton#PhSmall:hover {{ border-color:{l3}; }}
 QPushButton#PhSmall:disabled {{ color:{tg}; border-color:{l1}; background:transparent; }}
 
 /* ── круглые кнопки-иконки: ghost / surface / solid; размер — свойство phSize sm|md|lg ── */
@@ -405,10 +445,10 @@ QPushButton#PhIcon[phSize="lg"], QPushButton#PhIconSurface[phSize="lg"], QPushBu
     min-width:{bx(40)}px; max-width:{bx(40)}px; min-height:{bx(40)}px; max-height:{bx(40)}px; border-radius:{px(20)}px; }}
 QPushButton#PhIconSolid[phSize="play"] {{
     min-width:{bx(44)}px; max-width:{bx(44)}px; min-height:{bx(44)}px; max-height:{bx(44)}px; border-radius:{px(22)}px; }}
-QPushButton#PhIcon:hover, QToolButton#PhIcon:hover {{ background:rgba(255,255,255,0.06); }}
+QPushButton#PhIcon:hover, QToolButton#PhIcon:hover {{ }}
 QPushButton#PhIcon:checked {{ background:rgba(255,255,255,0.12); border-color:{l2}; }}
 QPushButton#PhIconSurface {{ background:{gf}; border-color:{l1}; }}
-QPushButton#PhIconSurface:hover {{ background:{gfs}; border-color:{l2}; }}
+QPushButton#PhIconSurface:hover {{ border-color:{l2}; }}
 QPushButton#PhIconSurface:checked {{ background:rgba(255,255,255,0.12); border-color:{l2}; }}
 QPushButton#PhIconSolid {{ background:#ffffff; border-color:#ffffff; }}
 QPushButton#PhIconSolid:hover {{ background:rgba(255,255,255,0.92); }}
@@ -426,15 +466,15 @@ QFrame#PhSegments {{ background:{gf}; border:1px solid {l1}; border-radius:{px(1
 QFrame#PhSegments[phCompact="true"] {{ border-radius:{px(15)}px; }}
 QPushButton#PhSegment {{ min-height:{bx(28)}px; max-height:{bx(28)}px; padding:0 {px(14)}px; border-radius:{px(14)}px;
     color:{t3}; background:transparent; border:1px solid transparent; }}
-QPushButton#PhSegment:hover {{ color:{t2}; background:rgba(255,255,255,0.03); }}
-QPushButton#PhSegment:checked {{ color:{t1}; background:rgba(255,255,255,0.13); border-color:{l2}; }}
+QPushButton#PhSegment:hover {{ color:{t2}; }}
+QPushButton#PhSegment:checked {{ color:{t1}; background:transparent; border-color:transparent; }}  /* плашку рисуют PhSegments — она едет */
 QFrame#PhSegments[phCompact="true"] QPushButton#PhSegment {{ min-height:{bx(22)}px; max-height:{bx(22)}px;
     padding:0 {px(8)}px; border-radius:{px(11)}px; }}
 
 /* ── пилюли-фильтры ── */
 QPushButton#PhChip {{ min-height:{bx(28)}px; max-height:{bx(28)}px; padding:0 {px(10)}px; border-radius:{px(14)}px;
     color:{t3}; background:rgba(255,255,255,0.03); border:1px solid {l1}; }}
-QPushButton#PhChip:hover {{ color:{t2}; background:rgba(255,255,255,0.05); }}
+QPushButton#PhChip:hover {{ color:{t2}; }}
 QPushButton#PhChip:checked {{ color:{t1}; background:rgba(255,255,255,0.10); border-color:{l3}; }}
 
 /* ── поля ввода ── */
@@ -501,6 +541,139 @@ QWidget#PhRoot QToolTip, QToolTip#PhTip {{ color:{t1}; background:rgba(13,13,13,
 
 /* ── разделитель-волосок ── */
 QFrame#PhHairline {{ background:{l1}; border:0; min-height:1px; max-height:1px; }}
+"""
+
+
+def app_qss() -> str:
+    """Phantom для ВСЕГО окна (не только виджетов Ph*): дописывается в конец QSS темы Echoes Music, пока выбран
+    вид Phantom (ya_skin, скин «Phantom»). Перекрашивает стандартные кнопки, поля, списки, вкладки, флажки,
+    ползунки, меню, подсказки, диалоги и всплывашки, страницы Echoes (#Ya*, #Net*) — монохромом Phantom."""
+    t1, t2, t3, tg = css(TEXT_PRIMARY), css(TEXT_SECONDARY), css(TEXT_TERTIARY), css(TEXT_GHOST)
+    l1, l2, l3 = css(LINE_1), css(LINE_2), css(LINE_3)
+    fams = ",".join(f'"{f}"' for f in FAMILIES)
+    sw = _switch_assets()
+    return f"""
+/* ═══ Phantom: всё окно ═══ */
+QWidget {{ font-family:{fams}; color:{t1}; }}
+QToolTip {{ color:{t1}; background:rgba(13,13,13,0.96); border:1px solid {l2}; border-radius:8px; padding:5px 8px;
+    font-size:11px; }}
+QMenu {{ background:rgba(13,13,13,0.97); border:1px solid {l2}; border-radius:14px; padding:6px; }}
+QMenu::item {{ color:{t2}; min-height:30px; padding:0 14px 0 10px; border-radius:6px; font-size:12px;
+    background:transparent; }}
+QMenu::item:selected {{ color:{t1}; background:rgba(255,255,255,0.07); }}
+QMenu::item:disabled {{ color:{tg}; }}
+QMenu::separator {{ height:1px; background:{l1}; margin:4px 6px; }}
+QMenu::section {{ color:{t3}; font-size:10px; font-weight:600; padding:6px 10px; }}
+
+/* кнопки: вторичная — стекло, отмеченная — светлее; акцентные — белые (как «играть» у Phantom) */
+QPushButton, QToolButton {{ color:{t1}; background:rgba(255,255,255,0.055); border:1px solid {l2};
+    border-radius:10px; }}
+QPushButton:hover, QToolButton:hover {{ border-color:{l3}; }}
+QPushButton:pressed, QToolButton:pressed {{ }}
+QPushButton:checked, QToolButton:checked {{ color:{t1}; background:rgba(255,255,255,0.13); border-color:{l3}; }}
+QPushButton:disabled, QToolButton:disabled {{ color:{tg}; background:transparent; border-color:{l1}; }}
+QPushButton#AccentBtn, QPushButton#YaYellow,
+QPushButton#NetPrimary, QPushButton#PrimaryBtn {{ color:#050505; background:rgba(255,255,255,0.92);
+    border:1px solid rgba(255,255,255,0.92); }}
+QPushButton#AccentBtn:hover, QPushButton#YaYellow:hover, QPushButton#NetPrimary:hover,
+QPushButton#PrimaryBtn:hover {{ background:#ffffff; border-color:#ffffff; }}
+QPushButton#YaChip, QPushButton#YaSeg {{ color:{t3}; background:rgba(255,255,255,0.03); border:1px solid {l1};
+    border-radius:14px; font-weight:500; }}
+QPushButton#YaChip:hover, QPushButton#YaSeg:hover {{ color:{t2}; }}
+QPushButton#YaChip:checked, QPushButton#YaSeg:checked {{ border-radius:14px; color:{t1};
+    background:rgba(255,255,255,0.13); border:1px solid {l2}; }}   /* выбранная — стеклянная пилюля, как у Phantom */
+QFrame#YaSegTrack {{ background:rgba(255,255,255,0.045); border:1px solid {l1}; border-radius:17px; }}
+QPushButton#YaNav {{ color:{t2}; background:transparent; border:1px solid transparent; border-radius:10px; }}
+QPushButton#YaNav:hover {{ color:{t1}; }}
+QPushButton#YaNav:checked {{ color:{t1}; background:rgba(255,255,255,0.12); border-color:{l2}; }}
+QPushButton#GhostBtn {{ color:{t2}; background:transparent; border:1px solid transparent; }}
+QPushButton#GhostBtn:hover {{ color:{t1}; }}
+
+/* поля ввода и списки выбора */
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit, QTimeEdit {{
+    color:{t1}; background:rgba(255,255,255,0.035); border:1px solid {l1}; border-radius:10px;
+    selection-background-color:rgba(255,255,255,0.88); selection-color:#050505; }}
+QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover, QSpinBox:hover, QComboBox:hover {{ border-color:{l2}; }}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus {{
+    border-color:rgba(255,255,255,0.42); background:rgba(255,255,255,0.05); }}
+QComboBox::drop-down {{ border:0; width:22px; }}
+QComboBox::down-arrow {{ image:url({sw['chev']}); width:12px; height:12px; }}
+QComboBox QAbstractItemView {{ background:rgba(13,13,13,0.97); border:1px solid {l2}; border-radius:12px; padding:6px;
+    color:{t2}; outline:0; selection-background-color:rgba(255,255,255,0.07); selection-color:{t1}; }}
+
+/* флажки — переключатели Phantom, радио — кружки */
+QCheckBox {{ color:{t1}; spacing:10px; background:transparent; }}
+QCheckBox::indicator {{ width:40px; height:22px; }}
+QCheckBox::indicator:unchecked {{ image:url({sw['sw_off']}); }}
+QCheckBox::indicator:unchecked:hover {{ image:url({sw['sw_off_h']}); }}
+QCheckBox::indicator:checked {{ image:url({sw['sw_on']}); }}
+QCheckBox::indicator:checked:hover {{ image:url({sw['sw_on_h']}); }}
+QRadioButton {{ color:{t1}; spacing:8px; background:transparent; }}
+QRadioButton::indicator {{ width:14px; height:14px; border-radius:7px; border:1px solid {l3}; background:transparent; }}
+QRadioButton::indicator:checked {{ background:#ffffff; border:4px solid #1a1a1a; }}
+
+/* ползунки: дорожка 3 px, белая заливка, кружок 12 px */
+QSlider::groove:horizontal {{ height:3px; background:rgba(255,255,255,0.12); border-radius:1px; }}
+QSlider::sub-page:horizontal {{ height:3px; background:rgba(255,255,255,0.86); border-radius:1px; }}
+QSlider::add-page:horizontal {{ height:3px; background:rgba(255,255,255,0.12); border-radius:1px; }}
+QSlider::handle:horizontal {{ width:12px; height:12px; margin:-5px 0; border-radius:6px; background:#ffffff;
+    border:0; }}
+QSlider::groove:vertical {{ width:3px; background:rgba(255,255,255,0.12); border-radius:1px; }}
+QSlider::add-page:vertical {{ width:3px; background:rgba(255,255,255,0.86); border-radius:1px; }}
+QSlider::sub-page:vertical {{ width:3px; background:rgba(255,255,255,0.12); border-radius:1px; }}
+QSlider::handle:vertical {{ width:12px; height:12px; margin:0 -5px; border-radius:6px; background:#ffffff; border:0; }}
+QProgressBar {{ background:rgba(255,255,255,0.10); border:0; border-radius:2px; color:transparent; max-height:4px; }}
+QProgressBar::chunk {{ background:rgba(255,255,255,0.86); border-radius:2px; }}
+
+/* вкладки — сегменты */
+QTabWidget::pane {{ border:1px solid {l1}; border-radius:14px; background:rgba(255,255,255,0.02); top:-1px; }}
+QTabBar::tab {{ color:{t3}; background:transparent; border:1px solid transparent; border-radius:12px;
+    padding:6px 14px; margin:2px; font-weight:600; }}
+QTabBar::tab:hover {{ color:{t2}; }}
+QTabBar::tab:selected {{ color:{t1}; background:rgba(255,255,255,0.12); border-color:{l2}; }}
+
+/* списки и таблицы */
+QListView, QListWidget, QTreeView, QTreeWidget, QTableView, QTableWidget {{ background:transparent; border:0;
+    outline:0; color:{t1}; selection-background-color:rgba(255,255,255,0.08); selection-color:{t1};
+    alternate-background-color:rgba(255,255,255,0.02); }}
+QListView::item:hover, QListWidget::item:hover, QTreeView::item:hover {{ background:rgba(255,255,255,0.045); }}
+QListView::item:selected, QListWidget::item:selected, QTreeView::item:selected {{
+    background:rgba(255,255,255,0.09); color:{t1}; }}
+QHeaderView::section {{ color:{t3}; background:transparent; border:0; border-bottom:1px solid {l1}; padding:6px 8px;
+    font-size:10px; font-weight:600; }}
+
+/* прокрутка — тонкая, без дорожки */
+QScrollBar:vertical {{ width:8px; background:transparent; margin:2px 0; border:0; }}
+QScrollBar::handle:vertical {{ min-height:32px; border-radius:3px; margin:0 2px; background:rgba(255,255,255,0.12); }}
+QScrollBar::handle:vertical:hover {{ background:rgba(255,255,255,0.22); }}
+QScrollBar:horizontal {{ height:8px; background:transparent; margin:0 2px; border:0; }}
+QScrollBar::handle:horizontal {{ min-width:32px; border-radius:3px; margin:2px 0; background:rgba(255,255,255,0.12); }}
+QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{ width:0; height:0;
+    background:transparent; border:0; }}
+
+/* диалоги, группы, разделители */
+QDialog, QMessageBox, QInputDialog, QFileDialog, QColorDialog, QFontDialog {{ background:#0b0b0b; color:{t1}; }}
+QMessageBox QLabel {{ color:{t1}; background:transparent; }}
+QGroupBox {{ color:{t2}; border:1px solid {l1}; border-radius:14px; margin-top:14px; padding-top:8px;
+    background:rgba(255,255,255,0.02); }}
+QGroupBox::title {{ subcontrol-origin:margin; left:12px; padding:0 4px; color:{t3}; font-size:10px; font-weight:600; }}
+QFrame[frameShape="4"], QFrame[frameShape="5"] {{ color:{l1}; background:{l1}; border:0; max-height:1px; }}
+
+/* подписи страниц Echoes — шрифт и цвета Phantom */
+QLabel {{ background:transparent; }}
+QLabel#YaH1 {{ color:{t1}; font-size:28px; font-weight:700; }}
+QLabel#YaH2 {{ color:{t1}; font-size:20px; font-weight:600; }}
+QLabel#YaHero {{ color:{t1}; font-weight:700; }}
+QLabel#YaSub, QLabel#Sub {{ color:{t2}; font-size:12px; }}
+QLabel#Section, QLabel#YaSideHead {{ color:{t3}; font-size:10px; font-weight:600; letter-spacing:2px; }}
+QLabel#Big {{ color:{t1}; font-size:15px; font-weight:600; }}
+QLabel#YaBadge {{ color:#050505; background:#ffffff; border-radius:9px; font-size:10px; font-weight:700; }}
+
+/* панели и карточки Echoes — стекло вместо сплошного тёмного */
+QFrame#YaContent, QFrame#YaPlayer, QFrame#YaTopBar, QFrame#YaSideNav, QFrame#YaCornerBox {{
+    background:rgba(255,255,255,0.03); border:1px solid {l1}; }}
+QFrame#NetCard, QFrame#YaWaveCard, QFrame#YaSkinCard, QFrame#YaCard, QFrame#Card {{
+    background:rgba(255,255,255,0.045); border:1px solid {l1}; border-radius:20px; }}
 """
 
 

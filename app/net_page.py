@@ -298,6 +298,21 @@ class _VoiceDevices(QObject):
 #  Рисованные виджеты
 # ══════════════════════════════════════════════════════════════════════════ #
 
+def _phantom() -> bool:
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                      # noqa: BLE001
+        return False
+
+
+# значки вкладок Echoes.NET в виде Phantom (Lucide)
+PH_TAB_ICONS = {"feed": "newspaper", "chats": "message-circle", "friends": "users", "room": "headphones",
+                "threads": "messages-square", "mods": "sparkles", "requests": "bug", "net": "settings",
+                "sponsors": "heart",
+                "admin": "shield"}
+
+
 class NetTitle(QWidget):
     """«Echoes.NET» жёлтым + живой индикатор сети (пульсирует, пока в сети)."""
 
@@ -332,6 +347,9 @@ class NetTitle(QWidget):
         self.update()
 
     def paintEvent(self, _):
+        if _phantom():
+            self._paint_phantom()
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         f = ya_font(30, QFont.Weight.Black)
@@ -360,6 +378,38 @@ class NetTitle(QWidget):
         p.drawText(QRectF(x + 18, 14, self.width() - x - 18, 20), Qt.AlignmentFlag.AlignVCenter,
                    QFontMetrics(ya_font(12)).elidedText(self.text, Qt.TextElideMode.ElideRight,
                                                          max(40, self.width() - int(x) - 24)))
+        p.end()
+
+
+    def _paint_phantom(self):
+        """Phantom: заголовок «Echoes.NET» уже в шапке панели — здесь только состояние сети пилюлей."""
+        import ph_style as ph
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        f = ph.font(ph.TEXT_XS, 600)
+        p.setFont(f)
+        fm = QFontMetrics(f)
+        tw = min(fm.horizontalAdvance(self.text) + ph.px(8), self.width() - 60)
+        h = ph.px(28)
+        r = QRectF(0.5, (self.height() - h) / 2, tw + ph.px(40), h)
+        p.setPen(QPen(ph.qcolor(ph.LINE_2), 1.0))
+        p.setBrush(ph.white(.05))
+        p.drawRoundedRect(r, h / 2, h / 2)
+        cx, cy = r.left() + ph.px(16), r.center().y()
+        dot = QColor("#3ddc84") if self.online else ph.white(.35)
+        if self.online:
+            k = 0.5 + 0.5 * math.sin(self._ph)
+            halo = QColor(dot)
+            halo.setAlpha(int(90 * (1 - k)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(halo)
+            p.drawEllipse(QPointF(cx, cy), 3 + 5 * k, 3 + 5 * k)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(dot)
+        p.drawEllipse(QPointF(cx, cy), 3.5, 3.5)
+        p.setPen(ph.qcolor(ph.TEXT_SECONDARY))
+        p.drawText(QRectF(cx + ph.px(12), r.top(), tw + ph.px(8), h), Qt.AlignmentFlag.AlignVCenter,
+                   fm.elidedText(self.text, Qt.TextElideMode.ElideRight, int(tw)))
         p.end()
 
 
@@ -483,9 +533,11 @@ class NetPage(QWidget):
                 "friends": "Ваш код, заявки и друзья", "room": "Слушать музыку вместе — синхронно, с голосом",
                 "threads": "Обсуждения как на Reddit", "mods": "Темы оформления от других пользователей",
                 "net": "Профиль, приватность, уведомления",
+                "sponsors": "Наши спонсоры: люди, которые поддержали ECHOES",
                 "admin": "Модерация Echoes.NET: модераторы, блокировки, скрытые посты, обновления для всех"}
     TABS = (("feed", "Лента"), ("chats", "Сообщения"), ("friends", "Друзья"), ("room", "Слушать вместе"),
-            ("threads", "Треды"), ("mods", "Моды"), ('requests','Запросы и баги'), ("net", "Настройки"), ("admin", "Админка"))
+            ("threads", "Треды"), ("mods", "Моды"), ('requests','Запросы и баги'), ("sponsors", "Спонсоры"),
+            ("net", "Настройки"), ("admin", "Админка"))
 
     def __init__(self, shell):
         super().__init__()
@@ -581,7 +633,22 @@ class NetPage(QWidget):
             self.tab_btns[key] = b
             btns.append(b)
         segrow = QHBoxLayout()
-        segrow.addWidget(seg_group(*btns))
+        if _phantom():                                     # вид Phantom: сегменты Phantom со значками и плашкой
+            import ph_widgets as _pw
+            seg = _pw.PhSegments([(k, b.text(), PH_TAB_ICONS.get(k, "")) for k, b in zip(
+                [k for k, _t in self.TABS], btns)], stretch=False)
+            for (key, _t), old in zip(self.TABS, btns):
+                nb = seg.buttons[key]
+                nb.setToolTip(old.toolTip())
+                nb.clicked.connect(lambda _=False, k=key: self.show_tab(k))
+                self.tab_btns[key] = nb
+                old.deleteLater()
+            seg.group.setExclusive(True)
+            segrow.addWidget(seg)
+            self.b_bug.hide()                              # «Запросы и баги» — уже вкладка
+            root.setContentsMargins(4, 4, 4, 8)
+        else:
+            segrow.addWidget(seg_group(*btns))
         segrow.addStretch(1)
         root.addLayout(segrow)
 
@@ -590,7 +657,7 @@ class NetPage(QWidget):
         self.tabs = {"feed": self._build_feed(), "chats": self._build_chats(), "room": self._build_room(),
                      "friends": self._build_friends(), "net": self._build_net(), "profile": self._build_profile(),
                      "mods": self._build_mods(), "threads": self._build_threads(), "admin": self._build_admin(),
-                     'requests':self._build_requests()}
+                     'requests':self._build_requests(), "sponsors": self._build_sponsors()}
         for w in self.tabs.values():
             self.stack.addWidget(w)
         from net_call_ui import CallController
@@ -629,6 +696,8 @@ class NetPage(QWidget):
         if not nd.settings.get("name"):                        # имя в сети по умолчанию — ник профиля плеера
             nd.settings["name"] = str(self.win.profile.get("nickname") or "ECHOES")[:40]
         self.node = nd
+        import net_sponsor                                     # значки и рамки спонсоров без ссылки на страницу
+        net_sponsor.NODE = nd
         if start:
             nd.start()
         return nd
@@ -923,7 +992,8 @@ class NetPage(QWidget):
         "mreact": ("feed", "profile"),
         "profile": ("feed", "friends", "chats", "profile", "room", "requests"),
         "contacts": ("friends", "chats", "requests", "profile"),
-        "staff": ("mods", "admin", "profile"),
+        "staff": ("mods", "admin", "profile", "sponsors"),
+        "sponsors": ("sponsors", "profile"),
         "room": ("room",), "room_chat": ("room",), "radio_permits": ("room",), "quiz": ("room",),
         "q_add": ("room",), "q_res": ("room",), "spl": ("room",),
         "update_pub": ("net", "admin"), "notify": ("requests", "friends"),
@@ -959,6 +1029,8 @@ class NetPage(QWidget):
         elif key == "admin":
             self._fill_admin()
         elif key=='requests':self._fill_requests()
+        elif key == "sponsors":
+            self.sponsors_wall.fill()
         # Record only successful, populated views (startup creates the node later).
         if self.node is not None:
             filled[key] = stamp()
@@ -3541,9 +3613,15 @@ class NetPage(QWidget):
         b.setObjectName("NetBubble")
         b.setMaximumWidth(460)
         b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)   # не растягиваться по высоте чата
-        b.setStyleSheet("QFrame#NetBubble{background:%s;border-radius:16px;%s}"
-                        % ("rgba(255,219,26,0.92)" if out else "#262628",
-                           "border-bottom-right-radius:4px;" if out else "border-bottom-left-radius:4px;"))
+        if _phantom():                                     # Phantom: свои — светлые, чужие — стекло с тонкой рамкой
+            b.setStyleSheet("QFrame#NetBubble{background:%s;border:1px solid %s;border-radius:18px;%s}"
+                            % ("rgba(255,255,255,0.92)" if out else "rgba(255,255,255,0.07)",
+                               "rgba(255,255,255,0.92)" if out else "rgba(255,255,255,0.10)",
+                               "border-bottom-right-radius:6px;" if out else "border-bottom-left-radius:6px;"))
+        else:
+            b.setStyleSheet("QFrame#NetBubble{background:%s;border-radius:16px;%s}"
+                            % ("rgba(255,219,26,0.92)" if out else "#262628",
+                               "border-bottom-right-radius:4px;" if out else "border-bottom-left-radius:4px;"))
         bv = QVBoxLayout(b)
         bv.setContentsMargins(12, 8, 12, 6)
         bv.setSpacing(4)
@@ -5132,6 +5210,12 @@ class NetPage(QWidget):
             return self.my_deco()
         return self.node.public_deco(onion)
 
+    def _build_sponsors(self):
+        """Вкладка «Спонсоры» (ph_shop.SponsorsWall): стена постов спонсоров, свой пост, модерация."""
+        import ph_shop
+        self.sponsors_wall = ph_shop.SponsorsWall(self)
+        return self.sponsors_wall
+
     def _frame_of(self, key):
         """Для net_frames: (рамка, ачивки, роль) человека; кэш на 5 с — аватарок в ленте много."""
         nd = self.node
@@ -5157,6 +5241,9 @@ class NetPage(QWidget):
                 else:
                     res = ((self.deco_of(onion) or {}).get("frame") or {}, nd.contact_profile(onion).get("ach") or [],
                            nd.role(onion))
+                import net_sponsor
+                if res and net_sponsor.is_sponsor(nd, onion):   # рамки спонсоров видны только у спонсоров
+                    res = (res[0], list(res[1]) + ["__sponsor__"], res[2])
             except Exception:                                  # noqa: BLE001
                 res = None
         cache[key] = (_t.monotonic(), res)
@@ -5179,7 +5266,9 @@ class NetPage(QWidget):
         if self.node is None:
             return
         d = dict(self.win.settings.get("ya_profile_deco") or {})
-        dlg = net_frames.FramePicker(self._my_avatar_pm(160), d.get("frame") or {}, self.achievements(),
+        import net_sponsor
+        ach_ = list(self.achievements()) + (["__sponsor__"] if net_sponsor.is_sponsor(self.node) else [])
+        dlg = net_frames.FramePicker(self._my_avatar_pm(160), d.get("frame") or {}, ach_,
                                      self.node.role(self.node.me.onion), self.ACH, self,
                                      gifts=__import__("net_gifts").gifted_frames(self.win))
         if dlg.exec():
@@ -5405,6 +5494,10 @@ class NetPage(QWidget):
                     m.addAction("Удалить витрину из профиля", self.delete_showcase)
                 m.exec(b.mapToGlobal(b.rect().bottomLeft()))
             b.clicked.connect(menu)
+            if _phantom():                                     # Phantom: тёмное стекло — видно на любом фоне шапки
+                import ya_profile
+                b.setObjectName("PhProfileBtn")
+                b.setStyleSheet(ya_profile.PH_BTN)
             hdr.layout().addWidget(b, 0, Qt.AlignmentFlag.AlignBottom)
         return deco
 

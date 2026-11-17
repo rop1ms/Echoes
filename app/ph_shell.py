@@ -28,14 +28,17 @@
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
+from pathlib import Path
 
 from frameclock import FrameTimer
 from PyQt6.QtCore import (QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer,
                           QVariantAnimation, pyqtSignal)
-from PyQt6.QtGui import QColor, QFontMetrics, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtGui import (QColor, QCursor, QFontMetrics, QImage, QKeySequence, QLinearGradient, QPainter, QPen, QPixmap,
+                         QRadialGradient, QShortcut)
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 import ph_backdrop
 import ph_style as ph
@@ -45,7 +48,8 @@ import ph_widgets as pw
 PLANET_MENU = (("wave", "Моя волна", "waves-horizontal"), ("foryou", "Для вас", "sparkles"),
                ("albums", "Альбомы", "disc-3"), ("follows", "Подписки", "user-plus"),
                ("tierlist", "Тирлист", "chart-column"), ("duel", "Дуэль", "flag"),
-               ("net", "Echoes.NET", "wifi"), ("search", "Поиск", "search"), ("profile", "Профиль", "user-round"))
+               ("search", "Поиск", "search"), ("profile", "Профиль", "user-round"))
+# Echoes.NET — отдельно от разделов: своя кнопка с землёй в верхней полосе и своя панель
 PLANET_KEYS = {k for k, _t, _i in PLANET_MENU} | {"artist"}
 # панели справа: ключ → (кикер, заголовок)
 DRAWERS = {"collection": ("Library", "Библиотека"), "playlist": ("Playlist", "Плейлист"),
@@ -61,6 +65,64 @@ TEXT_TOOLS = (("l_ai", "sparkles", "Синхронизировать с ИИ: н
 WEEKDAYS = ("ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС")
 MONTHS = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
           "ноября", "декабря")
+
+
+def layout_of(widget) -> "PhantomLayout | None":
+    """Раскладка Phantom окна, в котором widget (или None — прежний вид)."""
+    try:
+        sh = getattr(widget.window(), "_ya", None)
+        return sh.__dict__.get("ph") if sh is not None else None
+    except RuntimeError:
+        return None
+
+
+def paint_backdrop(widget, p: QPainter, rect: QRect | None = None) -> bool:
+    """Нарисовать под widget то, что видно за ним внутри открытой панели: кусок размытого снимка под панелью и
+    стекло панели. Для непрозрачных ради скорости виджетов (туманность «Моей волны», арена дуэли): выглядят как
+    прозрачные, но не заставляют перерисовывать всё под собой. False — не в панели Phantom (рисовать как раньше)."""
+    lay = layout_of(widget)
+    if lay is None:
+        return False
+    ov = lay.overlay
+    scrim = ov._scrim
+    if scrim.isNull() or not ov.isVisible() or not ov.isAncestorOf(widget):
+        return False
+    off = widget.mapTo(ov, QPoint(0, 0))
+    r = QRect(rect) if rect is not None else widget.rect()
+    k = scrim.devicePixelRatio()
+    p.drawPixmap(QRectF(r), scrim, QRectF((off.x() + r.x()) * k, (off.y() + r.y()) * k, r.width() * k,
+                                          r.height() * k))
+    p.fillRect(r, ph.white(ph.surface_alpha(True)))
+    return True
+
+
+def backdrop_key(widget):
+    """Что меняет картинку paint_backdrop (для кэшей): снимок и положение виджета в панели."""
+    lay = layout_of(widget)
+    if lay is None or lay.overlay._scrim.isNull():
+        return None
+    off = widget.mapTo(lay.overlay, QPoint(0, 0))
+    return (lay.overlay._scrim.cacheKey(), off.x(), off.y())
+
+
+def lyrics_style(base: dict | None, phs: dict | None = None) -> dict:
+    """Стиль панели текста Echoes в правой колонке Phantom: Inter 700 крупно, по левому краю, текущая строка
+    чуть выше середины, неактивные размыты; без подписи времени. phs — настройки Phantom (раздел «Текст»)."""
+    phs = phs or {}
+    st = dict(base or {})
+    for k in ("size", "panel", "liquid_glass", "upper"):          # крупный текст Phantom без подложки
+        st.pop(k, None)
+    st.update(phantom=True, align="left", time=False, karaoke=False,
+              blur_inactive=bool(phs.get("lyrics_blur", True)), words=bool(phs.get("lyrics_words", True)),
+              size_scale=float(phs.get("lyrics_scale", 1.0)))
+    if not phs.get("lyrics_autoscroll", True):
+        st["manual_scroll"] = True
+    st.setdefault("anchor", .44)
+    st.setdefault("line_gap", .62)
+    st.setdefault("fade", .16)
+    st.setdefault("weight", 700)
+    st.setdefault("active_scale", 1.0)
+    return st
 
 
 def _fmt(sec: float) -> str:
@@ -168,17 +230,28 @@ class PhTopBar(QWidget):
         h.addWidget(self.mode)
         icons = QHBoxLayout()
         icons.setSpacing(ph.px(6))
-        self.b_planet = pw.icon_button("earth", "ghost", "top", 17, "Echoes — разделы")
+        self.b_net = pw.icon_button("earth", "ghost", "top", 17, "Echoes.NET — друзья, лента, сообщения")
+        self.b_shop = pw.icon_button("shopping-bag", "ghost", "top", 17, "Магазин косметики и поддержка ECHOES")
+        self.b_planet = pw.icon_button("compass", "ghost", "top", 17, "Разделы Echoes")
         self.b_library = pw.icon_button("library", "ghost", "top", 17, "Библиотека")
         self.b_queue = pw.icon_button("list-music", "ghost", "top", 17, "Очередь")
         self.b_settings = pw.icon_button("settings", "ghost", "top", 17, "Настройки")
         self.b_planet.clicked.connect(lay.open_planet)
+        self.b_net.clicked.connect(lambda: lay.toggle_page("net"))
+        self.b_shop.clicked.connect(lambda: lay.toggle_page("shop"))
         self.b_library.clicked.connect(lambda: lay.toggle_page("collection"))
         self.b_queue.clicked.connect(lambda: lay.toggle_page("queue"))
         self.b_settings.clicked.connect(lambda: lay.toggle_page("settings"))
-        for b in (self.b_planet, self.b_library, self.b_queue, self.b_settings):
+        for b in (self.b_net, self.b_shop, self.b_planet, self.b_library, self.b_queue, self.b_settings):
             b.setCheckable(True)
             icons.addWidget(b)
+            if b is self.b_shop:                               # сеть и магазин — отдельно от разделов: разделитель
+                sep = QWidget()
+                sep.setFixedSize(1, ph.px(16))
+                sep.setStyleSheet(f"background:{ph.css(ph.LINE_2)};")
+                icons.addSpacing(ph.px(2))
+                icons.addWidget(sep, 0, Qt.AlignmentFlag.AlignVCenter)
+                icons.addSpacing(ph.px(2))
         h.addLayout(icons)
         self.win_btns = []
         tb = getattr(win, "titlebar", None)
@@ -226,7 +299,7 @@ class PhTopBar(QWidget):
 
     def sync_checked(self, page: str | None):
         """Значки «включены», пока открыта их панель."""
-        for b, keys in ((self.b_planet, PLANET_KEYS), (self.b_library, {"collection", "playlist"}),
+        for b, keys in ((self.b_net, {"net"}), (self.b_shop, {"shop"}), (self.b_planet, PLANET_KEYS), (self.b_library, {"collection", "playlist"}),
                         (self.b_queue, {"queue"}), (self.b_settings, {"settings", "listening"})):
             on = page in keys
             if b.isChecked() != on:
@@ -355,33 +428,102 @@ class PhIsland(pw.PhSurface):
 # ══════════════════════════════════════════════════════════════════════════ #
 
 class PhCoverCard(QWidget):
-    """Большая обложка со скруглением и тонкой рамкой; ⤢ — режим обложки Echoes; клик — LIVE."""
+    """Большая карточка обложки над плеером. Обложки квадратные, а карточка широкая, поэтому вид на выбор
+    (настройка «Вид карточки»): info — обложка слева и сведения о треке справа; blur — обложка по центру на её же
+    размытой копии; vinyl — конверт и выезжающая пластинка (модель из vinyl.py); crop — обложка с обрезкой.
+    Своя обложка (ph_cover): фото, GIF или видео — на месте обложки или на всю карточку.
+    ⤢ — режим обложки Echoes; кнопка-картинка — своя обложка и вид; клик — LIVE."""
 
     def __init__(self, lay: "PhantomLayout", parent=None):
         super().__init__(parent)
         self.lay = lay
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._img = QImage()
+        self._img = QImage()                                   # обложка трека
+        self._custom = QImage()                                # своя картинка (правило с фото)
+        self._custom_src = ""
+        self._raw = None                                       # последний кадр GIF/видео
         self._title = self._artist = ""
-        self._pm = QPixmap()
+        self._track = None
+        self._rule = None                                      # действующее правило своей обложки
         self._old = QPixmap()
         self._fade = 1.0
+        self._bg, self._bg_k = QPixmap(), None
+        self._slot, self._slot_k = QPixmap(), None
+        self._playing = False
+        self._angle = 0.0
+        self._slide = .30                                      # насколько пластинка выехала из конверта
+        self._vw, self._vw_k = None, None
         self._anim = QVariantAnimation(self)
         self._anim.setStartValue(0.0)
         self._anim.setEndValue(1.0)
         self._anim.setEasingCurve(ph.ease_out())
         self._anim.valueChanged.connect(self._on_fade)
+        self._spin = FrameTimer(self)
+        self._spin.setInterval(33)
+        self._spin.timeout.connect(self._spin_tick)
+        self._spin_t = time.monotonic()
         self.expand = pw.icon_button("maximize-2", "surface", "sm", 13, "Режим обложки", parent=self)
         self.expand.clicked.connect(lambda: getattr(lay.win, "_toggle_cover_mode", lambda: None)())
+        self.media_btn = pw.icon_button("image", "surface", "sm", 13, "Своя обложка и вид карточки", parent=self)
+        self.media_btn.clicked.connect(self._media_menu)
+        for b in (self.expand, self.media_btn):                # кнопки — при наведении (как в Phantom): не на тексте
+            b.hide()
+        import ph_cover
+        if ph_cover.QUALITY is None:
+            ph_cover.QUALITY = ph_cover._Quality()
+        ph_cover.QUALITY.ready.connect(self._on_quality)
+
+    def _media_menu(self):
+        import ph_cover
+        ph_cover.cover_menu(self.lay, self.media_btn)
+        if not self.underMouse():
+            self.leaveEvent(None)
+
+    def enterEvent(self, e):
+        self.expand.show()
+        self.media_btn.show()
+
+    def leaveEvent(self, e):
+        if self.media_btn.isDown():
+            return
+        self.expand.hide()
+        self.media_btn.hide()
 
     def radius(self) -> float:
         return float(ph.px(22))
 
+    # ── данные ── #
+    style = "info"
+    treatment = "original"                                     # «Обработка обложки»: original | mono | dim
+
+    def set_style(self, style: str):
+        if style not in ("info", "blur", "vinyl", "crop"):
+            style = "info"
+        if style != self.style:
+            self._old = self._snapshot()                       # плавно из прежнего вида в новый
+            self.style = style
+            self._start_fade()
+            self._invalidate()
+            self._frame_rescale()
+            self._sync_spin()
+
+    def set_treatment(self, mode: str):
+        if mode != self.treatment:
+            self.treatment = mode
+            self._invalidate()
+            self._vw_k = None
+
+    def set_track(self, t):
+        self._track = t
+
     def set_image(self, img: QImage, title: str, artist: str):
-        self._old = self._pm
+        self._old = self._snapshot()
         self._img, self._title, self._artist = img, title, artist
-        self._pm = QPixmap()
+        self._invalidate()
+        self._start_fade()
+
+    def _start_fade(self):
         d = ph.duration(ph.DUR_SLOW)
         if d and not self._old.isNull():
             self._anim.stop()
@@ -393,48 +535,477 @@ class PhCoverCard(QWidget):
             self._old = QPixmap()
         self.update()
 
+    def set_playing(self, playing: bool):
+        if playing != self._playing:
+            self._playing = playing
+            self._sync_spin()
+
+    def _on_quality(self, path, _txt):
+        if self._track and str(self._track.get("path") or "") == path and self.style == "info":
+            self._invalidate()
+
+    def _invalidate(self):
+        self._bg_k = self._slot_k = None
+        self.update()
+
     def _on_fade(self, v):
         self._fade = float(v)
         if self._fade >= 1.0:
             self._old = QPixmap()
         self.update()
 
+    def _snapshot(self) -> QPixmap:
+        """Нынешний вид карточки без кнопок — для плавной смены трека."""
+        if self.width() < 4 or not self.isVisible():
+            return QPixmap()
+        dpr = self.devicePixelRatioF() or 1.0
+        pm = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        try:
+            self._paint_content(p)
+        finally:
+            p.end()
+        return pm
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._pm = QPixmap()
+        self._invalidate()
         self._old = QPixmap()
         m = ph.px(14)
         self.expand.move(self.width() - self.expand.width() - m, m)
+        self.media_btn.move(self.expand.x() - self.media_btn.width() - ph.px(6), m)
+        self._frame_rescale()
 
-    def _pixmap(self) -> QPixmap:
-        if self._pm.isNull() and self.width() > 4:
-            dpr = self.devicePixelRatioF() or 1.0
-            if self._img.isNull():
-                self._pm = ph.placeholder_cover(self.size(), self._title, self._artist, self.radius(), dpr)
+    def _treat(self, img: QImage) -> QImage:
+        if self.treatment == "mono" and not img.isNull():
+            return img.convertToFormat(QImage.Format.Format_Grayscale8).convertToFormat(
+                QImage.Format.Format_ARGB32_Premultiplied)
+        return img
+
+    def _still(self) -> QImage:
+        """Неподвижная картинка для места обложки: своё фото или обложка трека."""
+        return self._custom if not self._custom.isNull() else self._img
+
+    # ── раскладка вида ── #
+    def _geom(self):
+        """(вид, место обложки, место сведений). Узкая карточка — вид попроще, чтобы всё помещалось."""
+        W, H = self.width(), self.height()
+        r = self._rule
+        if self.style == "crop" or (r is not None and r.get("fill")) or H < ph.px(60) or W < H * 1.3:
+            # карточка на одну клетку (почти квадрат) — просто обложка 1:1
+            return "crop", QRectF(0, 0, W, H), None
+        pad = ph.px(14)
+        s = H - 2 * pad
+        if self.style == "info":
+            tx = pad + s + ph.px(18)
+            if W - pad - tx >= ph.px(120):
+                return "info", QRectF(pad, pad, s, s), QRectF(tx, pad, W - pad - tx, s)
+        if self.style == "vinyl" and W >= s * 1.5 + 2 * pad:
+            return "vinyl", QRectF(pad + ph.px(6), pad, s, s), None
+        return "blur", QRectF((W - s) / 2, pad, s, s), None
+
+    def _slot_radius(self, mode) -> float:
+        return self.radius() if mode == "crop" else float(ph.px(12))
+
+    # ── фон: размытая обложка, тень под обложкой, сведения ── #
+    def _background(self, mode, slot, text) -> QPixmap:
+        W, H = self.width(), self.height()
+        dpr = self.devicePixelRatioF() or 1.0
+        src = self._treat(self._still())
+        info = self._info_lines() if mode == "info" else None
+        key = (mode, W, H, dpr, src.cacheKey(), self.treatment, slot, text, info)
+        if key == self._bg_k:
+            return self._bg
+        pm = QPixmap(max(1, int(W * dpr)), max(1, int(H * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        q = QPainter(pm)
+        try:
+            q.setRenderHint(QPainter.RenderHint.Antialiasing)
+            q.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            q.setClipPath(ph.surface_path(QRectF(0, 0, W, H), self.radius()))
+            if not src.isNull():
+                import blur_fx
+                bw, bh = max(8, int(W * dpr / 3)), max(8, int(H * dpr / 3))
+                q.drawImage(QRectF(0, 0, W, H), blur_fx.blurred_cover(src, bw, bh, 9.0, dim=.42, sat=1.15))
             else:
-                self._pm = ph.rounded_pixmap(self._img, self.size(), self.radius(), dpr)
-        return self._pm
+                g = QLinearGradient(0, 0, W, H)
+                g.setColorAt(0, QColor(24, 24, 24))
+                g.setColorAt(1, QColor(8, 8, 8))
+                q.fillRect(QRectF(0, 0, W, H), g)
+            g = QLinearGradient(0, 0, 0, H)                    # стекло Phantom: светлее сверху, темнее снизу
+            g.setColorAt(0, ph.white(.06))
+            g.setColorAt(.5, QColor(0, 0, 0, 0))
+            g.setColorAt(1, QColor(0, 0, 0, 70))
+            q.fillRect(QRectF(0, 0, W, H), g)
+            ph.paint_shadow(q, slot, "card", self._slot_radius(mode))
+            if info is not None:
+                self._paint_info(q, text, info)
+        finally:
+            q.end()
+        self._bg, self._bg_k = pm, key
+        return pm
 
+    def _info_lines(self):
+        t = self._track or {}
+        import ph_cover
+        path = str(t.get("path") or "")
+        ext = Path(path).suffix.lstrip(".").upper() if path and not path.startswith("http") else ""
+        qual = ph_cover.quality(path) if ext else ""
+        dur = int(t.get("duration") or 0)
+        album = str(t.get("album") or "").strip()
+        genre = str(t.get("genre") or "").strip()
+        chips = tuple(x for x in (ext, qual or "", f"{dur // 60}:{dur % 60:02d}" if dur else "") if x)
+        return (self._title or "Ничего не играет", self._artist, " · ".join(x for x in (album, genre) if x), chips,
+                bool(self._track))
+
+    def _paint_info(self, q: QPainter, r: QRectF, info):
+        title, artist, album, chips, has = info
+        x, w = r.x(), r.width()
+        y = r.y() + ph.px(2)
+        f = ph.kicker_font()
+        q.setFont(f)
+        q.setPen(ph.qcolor(ph.TEXT_TERTIARY))
+        fm = QFontMetrics(f)
+        q.drawText(QRectF(x, y, w, fm.height()), Qt.AlignmentFlag.AlignLeft, "СЕЙЧАС ИГРАЕТ" if has else "ECHOES")
+        y += fm.height() + ph.px(8)
+        big = r.height() >= ph.px(150)
+        ft = ph.font(ph.TEXT_XL if big else ph.TEXT_LG, 650, -.02)
+        q.setFont(ft)
+        q.setPen(ph.qcolor(ph.TEXT_PRIMARY))
+        fm = QFontMetrics(ft)
+        for ln in _wrap2(title, fm, int(w), 2 if big else 1):
+            q.drawText(QRectF(x, y, w, fm.height()), Qt.AlignmentFlag.AlignLeft, ln)
+            y += fm.height()
+        y += ph.px(4)
+        if artist:
+            fa = ph.font(ph.TEXT_SM, 500)
+            q.setFont(fa)
+            q.setPen(ph.qcolor(ph.TEXT_SECONDARY))
+            fm = QFontMetrics(fa)
+            q.drawText(QRectF(x, y, w, fm.height()), Qt.AlignmentFlag.AlignLeft,
+                       fm.elidedText(artist, Qt.TextElideMode.ElideRight, int(w)))
+            y += fm.height() + ph.px(2)
+        if album:
+            fb = ph.font(ph.TEXT_XS)
+            q.setFont(fb)
+            q.setPen(ph.qcolor(ph.TEXT_TERTIARY))
+            fm = QFontMetrics(fb)
+            q.drawText(QRectF(x, y, w, fm.height()), Qt.AlignmentFlag.AlignLeft,
+                       fm.elidedText(album, Qt.TextElideMode.ElideRight, int(w)))
+            y += fm.height()
+        if chips:                                              # формат, качество, длительность — пилюли внизу
+            fc = ph.font(ph.TEXT_2XS, 600, .04)
+            q.setFont(fc)
+            fm = QFontMetrics(fc)
+            ch = fm.height() + ph.px(8)
+            cx, cy = x, r.bottom() - ch
+            if cy > y + ph.px(4):
+                for c in chips:
+                    cw = fm.horizontalAdvance(c) + ph.px(16)
+                    if cx + cw > x + w:
+                        break
+                    rr = QRectF(cx, cy, cw, ch)
+                    q.setPen(QPen(ph.qcolor(ph.LINE_2), 1.0))
+                    q.setBrush(ph.white(.06))
+                    q.drawRoundedRect(rr.adjusted(.5, .5, -.5, -.5), ch / 2, ch / 2)
+                    q.setPen(ph.qcolor(ph.TEXT_SECONDARY))
+                    q.drawText(rr, Qt.AlignmentFlag.AlignCenter, c)
+                    cx += cw + ph.px(6)
+
+    # ── место обложки ── #
+    def _slot_pixmap(self, mode, slot) -> QPixmap:
+        dpr = self.devicePixelRatioF() or 1.0
+        src = self._treat(self._still())
+        rad = self._slot_radius(mode)
+        key = (src.cacheKey(), slot.size(), rad, dpr, self.treatment, self._title, self._artist)
+        if key != self._slot_k:
+            size = QSize(max(1, int(slot.width())), max(1, int(slot.height())))
+            self._slot = (ph.rounded_pixmap(src, size, rad, dpr) if not src.isNull()
+                          else ph.placeholder_cover(size, self._title, self._artist, rad, dpr))
+            self._slot_k = key
+        return self._slot
+
+    def _paint_slot(self, p: QPainter, mode, slot):
+        rad = self._slot_radius(mode)
+        if self._frame is not None:                            # GIF / видео — кадр уже под размер места
+            p.save()
+            p.setClipPath(ph.surface_path(slot, rad))
+            fw = self._frame.width() / self._frame.devicePixelRatio()
+            fh = self._frame.height() / self._frame.devicePixelRatio()
+            p.drawImage(QPointF(slot.center().x() - fw / 2, slot.center().y() - fh / 2), self._frame)
+            p.restore()
+        else:
+            p.drawPixmap(slot.topLeft(), self._slot_pixmap(mode, slot))
+        if mode != "crop":
+            p.setPen(QPen(ph.qcolor(ph.LINE_2), 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(slot.adjusted(.5, .5, -.5, -.5), rad, rad)
+
+    # ── винил: модель из vinyl.py (диск, бороздки, этикетка с обложкой, блик) ── #
+    def _vinyl(self):
+        if self._vw is None:
+            import vinyl
+            self._vw = vinyl.VinylWidget(self)
+            self._vw.hide()
+        src = self._treat(self._still())
+        k = (src.cacheKey(), self.treatment)
+        if k != self._vw_k:
+            self._vw.set_cover(QPixmap.fromImage(src) if not src.isNull() else QPixmap())
+            self._vw_k = k
+        return self._vw
+
+    def _disc_geom(self, slot):
+        r = slot.height() * .47
+        return slot.x() + slot.width() * (.5 + self._slide), slot.center().y(), r
+
+    def _paint_disc(self, p: QPainter, slot):
+        cx, cy, r = self._disc_geom(slot)
+        try:
+            static, spin, sheen = self._vinyl()._real_layers(r)
+        except Exception as e:                                 # noqa: BLE001
+            print("[ph] vinyl:", e)
+            return
+        g = QRadialGradient(cx + r * .04, cy + r * .08, r * 1.12)
+        g.setColorAt(0, QColor(0, 0, 0, 120))
+        g.setColorAt(.85, QColor(0, 0, 0, 60))
+        g.setColorAt(1, QColor(0, 0, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(QPointF(cx + r * .04, cy + r * .08), r * 1.12, r * 1.12)
+        S = static.width() / static.devicePixelRatio()
+        p.drawPixmap(QPointF(cx - S / 2, cy - S / 2), static)
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(self._angle)
+        p.drawPixmap(QPointF(-S / 2, -S / 2), spin)
+        p.restore()
+        p.drawPixmap(QPointF(cx - S / 2, cy - S / 2), sheen)
+
+    def _sync_spin(self):
+        run = (self.style == "vinyl" and self.isVisible() and not (self.window() and self.window().isMinimized())
+               and (self._playing or abs(self._slide - .30) > .002))
+        if run and not self._spin.isActive():
+            self._spin_t = time.monotonic()
+            self._spin.start()
+        elif not run and self._spin.isActive():
+            self._spin.stop()
+
+    def _spin_tick(self):
+        now = time.monotonic()
+        dt = min(.1, now - self._spin_t)
+        self._spin_t = now
+        mode, slot, _ = self._geom()
+        if mode != "vinyl":
+            self._spin.stop()
+            return
+        target = .46 if self._playing else .30                 # играет — пластинка выезжает и крутится
+        self._slide += (target - self._slide) * min(1.0, dt * 4.0)
+        if self._playing:
+            self._angle = (self._angle + dt * 120.0) % 360.0
+        cx, cy, r = self._disc_geom(slot)
+        x0 = int(slot.center().x())
+        self.update(QRect(x0, int(cy - r * 1.2), int(cx + r * 1.2 - x0 + ph.px(8)), int(2.4 * r)))
+        if not self._playing and abs(self._slide - .30) <= .002:
+            self._spin.stop()
+
+    # ── своя обложка: фото / GIF / видео ── #
+    _player = None
+    _sink = None
+    _movie = None
+    _frame = None
+    _video_src = ""
+
+    def set_media(self, rule):
+        """rule из ph_cover.resolve (или None — обложка трека)."""
+        import ph_cover
+        path = ph_cover.media_path(rule) if rule else ""
+        kind = ph_cover.media_kind(path) if path else ""
+        old_k = ((self._rule or {}).get("path"), (self._rule or {}).get("fill"))
+        self._rule = rule if kind else None
+        new_k = ((self._rule or {}).get("path"), (self._rule or {}).get("fill"))
+        if new_k != old_k:
+            self._old = self._snapshot()
+        self._play_video(path if kind == "video" else "")
+        self._play_gif(path if kind == "gif" else "")
+        if kind == "image":
+            if self._custom_src != path:
+                from PyQt6.QtGui import QImageReader
+                rd = QImageReader(path)
+                rd.setAutoTransform(True)
+                sz = rd.size()
+                if sz.isValid() and max(sz.width(), sz.height()) > 1600:
+                    rd.setScaledSize(sz.scaled(1600, 1600, Qt.AspectRatioMode.KeepAspectRatio))
+                self._custom = rd.read()
+                self._custom_src = path
+        else:
+            self._custom, self._custom_src = QImage(), ""
+        self._invalidate()
+        self._frame_rescale()
+        if new_k != old_k:
+            self._start_fade()
+
+    def set_video(self, path: str):
+        """Прежний вызов: видео на всю карточку ('' — обложка трека)."""
+        self.set_media({"scope": "all", "key": "", "path": path, "fill": True} if path else None)
+
+    def _play_video(self, path: str):
+        if path == self._video_src:
+            return
+        self._video_src = path
+        if not path:
+            if self._player is not None:
+                self._player.stop()
+                self._player.deleteLater()
+                self._player = self._sink = None
+            if self._movie is None:
+                self._frame = self._raw = None
+            self.update()
+            return
+        try:
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtMultimedia import QMediaPlayer, QVideoSink
+        except Exception as e:                                 # noqa: BLE001
+            print("[ph] video:", e)
+            return
+        if self._player is None:
+            self._player = QMediaPlayer(self)
+            self._sink = QVideoSink(self)
+            self._player.setVideoSink(self._sink)
+            self._sink.videoFrameChanged.connect(self._on_frame)
+            try:
+                self._player.setLoops(QMediaPlayer.Loops.Infinite)
+            except Exception:                                  # noqa: BLE001
+                pass
+        self._player.setSource(QUrl.fromLocalFile(str(path)))
+        self._sync_video()
+
+    def _play_gif(self, path: str):
+        cur = self._movie.fileName() if self._movie is not None else ""
+        if path == cur:
+            return
+        if self._movie is not None:
+            self._movie.stop()
+            self._movie.deleteLater()
+            self._movie = None
+            if self._player is None:
+                self._frame = self._raw = None
+        if not path:
+            return
+        from PyQt6.QtGui import QMovie
+        self._movie = QMovie(path, parent=self)
+        self._movie.setCacheMode(QMovie.CacheMode.CacheAll)
+        mv = self._movie
+        mv.frameChanged.connect(lambda _i, m=mv: self._on_image_frame(m.currentImage()))
+        self._sync_video()
+
+    def _sync_video(self):
+        run = self.isVisible() and not (self.window() and self.window().isMinimized())
+        if self._player is not None:
+            from PyQt6.QtMultimedia import QMediaPlayer
+            st = self._player.playbackState()
+            if run and st != QMediaPlayer.PlaybackState.PlayingState:
+                self._player.play()
+            elif not run and st == QMediaPlayer.PlaybackState.PlayingState:
+                self._player.pause()
+        if self._movie is not None:
+            from PyQt6.QtGui import QMovie
+            st = self._movie.state()
+            if run and st == QMovie.MovieState.NotRunning:
+                self._movie.start()
+            elif run and st == QMovie.MovieState.Paused:
+                self._movie.setPaused(False)
+            elif not run and st == QMovie.MovieState.Running:
+                self._movie.setPaused(True)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._sync_video()
+        self._sync_spin()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._sync_video()
+        self._sync_spin()
+
+    def _on_frame(self, frame):
+        if not frame.isValid() or not self.isVisible():
+            return
+        self._on_image_frame(frame.toImage())
+
+    def _on_image_frame(self, img: QImage):
+        if img.isNull() or not self.isVisible():
+            return
+        self._raw = img
+        self._frame_rescale()
+
+    def _frame_rescale(self):
+        img = self._raw
+        if img is None or (self._player is None and self._movie is None):
+            self._frame = None
+            return
+        _mode, slot, _ = self._geom()
+        dpr = self.devicePixelRatioF() or 1.0
+        w, h = max(1, int(slot.width() * dpr)), max(1, int(slot.height() * dpr))
+        out = img.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                         Qt.TransformationMode.SmoothTransformation if self._movie is not None
+                         else Qt.TransformationMode.FastTransformation)
+        out = self._treat(out)
+        out.setDevicePixelRatio(dpr)
+        self._frame = out
+        self.update(slot.toAlignedRect().adjusted(-1, -1, 1, 1))
+
+    # ── мышь и отрисовка ── #
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
             self.lay.set_mode("live")
         elif e.button() == Qt.MouseButton.RightButton:
             self.lay.shell._p_cover_press(e)
 
+    def _paint_content(self, p: QPainter):
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        mode, slot, text = self._geom()
+        if mode != "crop":
+            p.drawPixmap(0, 0, self._background(mode, slot, text))
+        if mode == "vinyl":
+            self._paint_disc(p, slot)
+        self._paint_slot(p, mode, slot)
+
     def paintEvent(self, e):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pm = self._pixmap()
-        if not self._old.isNull() and self._fade < 1.0:
-            p.drawPixmap(0, 0, self._old)
-            p.setOpacity(self._fade)
-        p.drawPixmap(0, 0, pm)
-        p.setOpacity(1.0)
-        p.setPen(QPen(ph.qcolor(ph.LINE_1), 1.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        r = self.radius()
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), r, r)
-        p.end()
+        try:
+            if not self._old.isNull() and self._fade < 1.0:
+                p.drawPixmap(0, 0, self._old)
+                p.setOpacity(self._fade)
+            self._paint_content(p)
+            p.setOpacity(1.0)
+            if self.treatment == "dim":
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(0, 0, 0, 92))
+                p.drawPath(ph.surface_path(QRectF(self.rect()), self.radius()))
+            p.setPen(QPen(ph.qcolor(ph.LINE_1), 1.0))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            r = self.radius()
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), r, r)
+        finally:
+            p.end()
+
+
+def _wrap2(text: str, fm: QFontMetrics, width: int, lines: int = 2) -> list:
+    """Перенос по словам максимум на lines строк, последняя — с многоточием."""
+    if lines <= 1 or fm.horizontalAdvance(text) <= width:
+        return [fm.elidedText(text, Qt.TextElideMode.ElideRight, width)]
+    words, first = text.split(), ""
+    for i, wd in enumerate(words):
+        cand = (first + " " + wd).strip()
+        if fm.horizontalAdvance(cand) > width and first:
+            rest = " ".join(words[i:])
+            return [first, fm.elidedText(rest, Qt.TextElideMode.ElideRight, width)]
+        first = cand
+    return [fm.elidedText(text, Qt.TextElideMode.ElideRight, width)]
 
 
 class PhVolumePopup(QWidget):
@@ -550,15 +1121,37 @@ class PhPlayerCard(pw.PhSurface):
         times.addStretch(1)
         times.addWidget(self.t_dur)
         v.addLayout(times)
+        self._v = v
         self._state = {}
         self._pop: PhVolumePopup | None = None
+        self.compact = False
+
+    def set_compact(self, on: bool):
+        """Плеер на одну клетку: название мельче, «перемешать», «повтор» и громкость прячутся (громкость —
+        колесом над карточкой), поля уже. Всё нужное — ⏮ ▶ ⏭, ♥, «⋯» и полоса — остаётся."""
+        if on == self.compact:
+            return
+        self.compact = on
+        for b in (self.b_shuffle, self.b_repeat, self.b_vol):
+            b.setVisible(not on)
+        ph.set_font(self.title, ph.font(17 if on else 22, 650, -.02))
+        m = ph.px(14 if on else 20)
+        self._v.setContentsMargins(m, ph.px(14 if on else 18), m, ph.px(12 if on else 14))
+
+    def wheelEvent(self, e):
+        if self.compact:                                       # громкости-кнопки нет — колесо над карточкой
+            self._vol_wheel(e)
+            return
+        super().wheelEvent(e)
 
     def set_track(self, t):
-        _elide(self.title, _title(t) if t else "—", self.width() - ph.px(150))
-        _elide(self.artist, _artist(t) if t else "", self.width() - ph.px(150))
+        reserve = ph.px(70 if self.compact else 150)
+        _elide(self.title, _title(t) if t else "—", self.width() - reserve)
+        _elide(self.artist, _artist(t) if t else "", self.width() - reserve)
         self._state.pop("like", None)
 
     def resizeEvent(self, e):
+        self.set_compact(self.width() < ph.px(340))
         super().resizeEvent(e)
         t = self.lay.shell.current_track()
         self.set_track(t)
@@ -622,16 +1215,13 @@ def _heart_icon(size: int):
 
 
 class PhWidgetCard(pw.PhSurface):
-    """Карточка-виджет слева (как у Phantom): кикер, подпись, ‹ ›, точки. Виды этапа 2: часы, визуализатор
-    (покой — линия), о треке, далее в очереди; остальные виды Phantom и наши — этап 6."""
-
-    KINDS = (("visualizer", "Audio visualizer", "Живой спектр аудиосигнала"),
-             ("clock", "Clock", "Минималистичные часы"),
-             ("info", "Music information", "Формат и файл трека"),
-             ("queue", "Queue", "Далее в очереди"))
+    """Карточка-виджет слева (как у Phantom): кикер, подпись, ‹ ›, точки. Виды и их отрисовка — ph_cards
+    (спектр, круг, уровень, статистика, эквалайзер, часы, очередь, о треке, погода, друзья в NET, ачивки)."""
 
     def __init__(self, lay: "PhantomLayout", kind: str, parent=None):
         super().__init__("card", parent)
+        import ph_cards
+        self.KINDS = ph_cards.KINDS
         self.lay = lay
         keys = [k for k, _a, _b in self.KINDS]
         self.idx = keys.index(kind) if kind in keys else 0
@@ -650,10 +1240,13 @@ class PhWidgetCard(pw.PhSurface):
         br = pw.icon_button("chevron-right", "ghost", "sm", 13, "Следующий виджет")
         bl.clicked.connect(lambda: self.step(-1))
         br.clicked.connect(lambda: self.step(1))
+        self.reset = pw.icon_button("rotate-ccw", "ghost", "sm", 13, "Сбросить эквалайзер (все полосы в ноль)")
+        self.reset.clicked.connect(self._eq_reset)
+        hr.addWidget(self.reset, 0, Qt.AlignmentFlag.AlignTop)
         hr.addWidget(bl, 0, Qt.AlignmentFlag.AlignTop)
         hr.addWidget(br, 0, Qt.AlignmentFlag.AlignTop)
         v.addLayout(hr)
-        self.body = _WidgetBody(self)
+        self.body = ph_cards.WidgetBody(self)
         v.addWidget(self.body, 1)
         self.dots = pw.PhDots(len(self.KINDS), self.idx)
         v.addWidget(self.dots, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -663,98 +1256,49 @@ class PhWidgetCard(pw.PhSurface):
         return self.KINDS[self.idx][0]
 
     def step(self, d: int):
+        old = self.body.grab() if self.body.isVisible() else None
         self.idx = (self.idx + d) % len(self.KINDS)
         self._apply()
+        if old is not None:
+            self.body.slide(old, d)                            # старый вид уезжает, новый въезжает
         self.lay.save_widgets()
+
+    def set_kind(self, kind: str):
+        keys = [k for k, _a, _b in self.KINDS]
+        if kind in keys:
+            self.idx = keys.index(kind)
+            self._apply()
 
     def _apply(self):
         _k, kick, sub = self.KINDS[self.idx]
         self.kick.setText(kick.upper())
         self.sub.setText(sub)
         self.dots.set_current(self.idx)
-        self.body.update()
+        self.reset.setVisible(self.widget_kind() == "eq")
+        self.body.kind_changed()
+
+    def _eq_reset(self):
+        """Все полосы в ноль: пресет «Плоский», если он есть, иначе ползунки по одному."""
+        win = self.lay.win
+        cb = getattr(win, "eq_preset_cb", None)
+        i = cb.findText("Плоский") if cb is not None else -1
+        if i >= 0:
+            if cb.currentIndex() == i:
+                cb.setCurrentIndex(0)
+            cb.setCurrentIndex(i)
+        for sl in getattr(win, "_eq_sliders", None) or []:
+            if sl.value() != 0:
+                sl.setValue(0)
+        self.body.kind_changed()
+
+    def wheelEvent(self, e):                                   # колесо над карточкой — листать виды
+        d = e.angleDelta().y()
+        if d:
+            self.step(-1 if d > 0 else 1)
+            e.accept()
 
     def tick(self):
-        if self.widget_kind() in ("clock", "queue", "info"):
-            self.body.tick()
-
-
-class _WidgetBody(QWidget):
-    def __init__(self, card: PhWidgetCard):
-        super().__init__(card)
-        self.card = card
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._sig = None
-
-    def tick(self):
-        sig = self._signature()
-        if sig != self._sig:
-            self._sig = sig
-            self.update()
-
-    def _signature(self):
-        k = self.card.widget_kind()
-        if k == "clock":
-            return ("clock", time.strftime("%H:%M"))
-        lay = self.card.lay
-        if k == "queue":
-            return ("queue", tuple(str(t.get("path", "")) for t in lay.upcoming(3)))
-        t = lay.shell.current_track()
-        return ("info", str((t or {}).get("path", "")))
-
-    def paintEvent(self, e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        k = self.card.widget_kind()
-        r = QRectF(self.rect())
-        lay = self.card.lay
-        if k == "visualizer":
-            y = r.bottom() - ph.px(14)
-            ph.paint_hairline(p, r.left(), r.right() - ph.px(4), y, ph.LINE_2)
-        elif k == "clock":
-            tm = time.localtime()
-            cx, cy = r.left() + ph.px(28), r.center().y() + ph.px(2)
-            rad = ph.px(24)
-            p.setPen(QPen(ph.white(.12), 1.5))
-            p.drawEllipse(QPointF(cx, cy), rad, rad)
-            frac = (tm.tm_hour % 12 * 60 + tm.tm_min) / 720.0
-            p.setPen(QPen(ph.white(.86), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(cx - rad, cy - rad, 2 * rad, 2 * rad), 90 * 16, int(-frac * 360 * 16))
-            x = cx + rad + ph.px(16)
-            p.setFont(ph.font(17, 650, -.01, tnum=True))
-            p.setPen(ph.qcolor(ph.TEXT_PRIMARY))
-            p.drawText(QPointF(x, cy + ph.px(1)), time.strftime("%H:%M", tm))
-            p.setFont(ph.font(ph.TEXT_2XS, 500))
-            p.setPen(ph.qcolor(ph.TEXT_TERTIARY))
-            p.drawText(QPointF(x, cy + ph.px(17)),
-                       f"{WEEKDAYS[tm.tm_wday]} · {tm.tm_mday} {MONTHS[tm.tm_mon - 1]} {tm.tm_year}")
-        elif k == "info":
-            t = lay.shell.current_track() or {}
-            path = str(t.get("path", ""))
-            ext = path.rsplit(".", 1)[-1].upper() if "." in path[-6:] else ("ONLINE" if path else "—")
-            rows = (("Формат", ext), ("Исполнитель", _artist(t) if t else "—"),
-                    ("Альбом", t.get("album") or "—"))
-            self._rows(p, r, rows)
-        elif k == "queue":
-            nx = lay.upcoming(3)
-            rows = [(f"{i + 1:02d}", f"{_title(t)} — {_artist(t)}") for i, t in enumerate(nx)] or [("", "Очередь пуста")]
-            self._rows(p, r, rows)
-        p.end()
-
-    @staticmethod
-    def _rows(p: QPainter, r: QRectF, rows):
-        y = r.top() + ph.px(16)
-        step = ph.px(22)
-        for a, b in rows:
-            p.setFont(ph.font(ph.TEXT_2XS, 600, .08))
-            p.setPen(ph.qcolor(ph.TEXT_TERTIARY))
-            p.drawText(QPointF(r.left(), y + ph.px(12)), a.upper() if not a[:1].isdigit() else a)
-            p.setFont(ph.font(ph.TEXT_XS, 550))
-            p.setPen(ph.qcolor(ph.TEXT_PRIMARY))
-            x = r.left() + ph.px(78 if not a[:1].isdigit() else 24)
-            p.drawText(QRectF(x, y, r.right() - x - ph.px(4), step), Qt.AlignmentFlag.AlignVCenter,
-                       p.fontMetrics().elidedText(b, Qt.TextElideMode.ElideRight, int(r.right() - x - ph.px(4))))
-            y += step
+        self.body.tick()
 
 
 # ══════════════════════════════════════════════════════════════════════════ #
@@ -894,6 +1438,8 @@ class PhRightColumn(QWidget):
             col.hide()
         panel.setParent(self)
         panel.set_backdrop(None)                               # прозрачная: под ней живой фон Phantom
+        panel.liquid = False                                   # буквы не подрастают: текущая строка загорается
+                                                               # по словам (LyricsScrollPanel._draw_words_ph)
         self.panel = panel
         self._place()
         return panel
@@ -1002,6 +1548,11 @@ class PhOverlay(QWidget):
         self.menu = pw.PhSegments([(k, t, i) for k, t, i in PLANET_MENU])
         self.menu.changed.connect(lambda k: lay.shell.show_page(k))
         pv.addWidget(self.menu)
+        self.set_tabs = pw.PhSegments([("phantom", "Phantom", "sparkles"), ("echoes", "Echoes — все настройки",
+                                                                             "settings")])
+        self.set_tabs.changed.connect(self._settings_switch)
+        self.set_tabs.hide()
+        pv.addWidget(self.set_tabs)
         pv.addWidget(pw.PhHairline())
         self.body = QWidget()
         self.body.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -1023,23 +1574,35 @@ class PhOverlay(QWidget):
     def panel_rect(self, kind: str | None = None) -> QRect:
         kind = kind or self.kind or "planet"
         W, H = self.width(), self.height()
-        if kind == "planet":
+        if kind in ("planet", "wide"):
             m = ph.px(20)
             return QRect(m, m, W - 2 * m, H - 2 * m)
         m = ph.px(12)
-        w = min(max(ph.px(560), int(W * .44)), W - 2 * m)
+        k, lo = (.5, ph.px(660)) if kind == "side" else (.44, ph.px(560))
+        w = min(max(lo, int(W * k)), W - 2 * m)
         return QRect(W - w - m, m, w, H - 2 * m)
 
+    def settings_tab(self) -> str:
+        return self.set_tabs.current() or "phantom"
+
+    def _settings_switch(self, key: str):
+        """Настройки: «Phantom» — разделы Phantom, «Echoes» — прежняя страница со всеми настройками Echoes."""
+        sh = self.lay.shell
+        w = self.lay.page_widget("settings") if key == "phantom" else sh.pages.get("settings")
+        if w is not None:
+            sh.stack.setCurrentWidget(w)
+
     def configure(self, kind: str, kick: str, title: str, subline: str = "", menu_key: str | None = None,
-                  back: bool = False):
+                  back: bool = False, settings: bool = False):
         changed = kind != self.kind
         self.kind = kind
         self.kick.setText(kick.upper())
-        ph.set_font(self.title, ph.font(30 if kind == "planet" else 22, 650, -.03))
+        ph.set_font(self.title, ph.font(30 if kind in ("planet", "wide") else 22, 650, -.03))
         self.title.setText(title)
         self.subline.setText(subline.upper())
         self.subline.setVisible(bool(subline))
         planet = kind == "planet"
+        self.set_tabs.setVisible(settings)
         self.menu.setVisible(planet)
         self.b_profile.setVisible(planet)
         self.back.setVisible(back)
@@ -1167,14 +1730,316 @@ class PhOverlay(QWidget):
         else:
             p.fillRect(self.rect(), QColor(0, 0, 0, int(140 * k)))
         r = QRectF(self.panel_rect())
-        dx = (1.0 - k) * (ph.px(36) if self.kind == "drawer" else 0)
-        dy = (1.0 - k) * (ph.px(14) if self.kind == "planet" else 0)
+        dx = (1.0 - k) * (ph.px(36) if self.kind in ("drawer", "side") else 0)
+        dy = (1.0 - k) * (ph.px(14) if self.kind in ("planet", "wide") else 0)
         rr = r.translated(dx, dy)
         p.setOpacity(k)
         ph.paint_shadow(p, rr, "panel")
         if not self._snap.isNull():
             p.drawPixmap(rr.topLeft(), self._snap)
         p.end()
+
+
+class PhEditLayer(QWidget):
+    """Режим правки левой колонки (как на iPhone): зажали колёсико мыши над колонкой — блоки (обложка, плеер,
+    виджеты) чуть уменьшаются и покачиваются; × — убрать, ‹↑› ‹↓› — на уровень выше/ниже, ⤡ — на одну клетку
+    или на всю ширину; внизу «Добавить» и «Готово». Пока правка открыта, настоящие блоки спрятаны, слой рисует
+    их снимки (кадр — только повороты картинок). Всё движется плавно: перестановки едут, убранный блок
+    сжимается и гаснет, новый вырастает, кнопки пружинят."""
+
+    def __init__(self, lay: "PhantomLayout", parent=None):
+        super().__init__(parent)
+        self.lay = lay
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMouseTracking(True)
+        self.hide()
+        self._snaps: dict = {}                                 # id(блока) → снимок
+        self._cur: dict = {}                                   # id(блока) → QRectF сейчас (едет к цели)
+        self._dying: list = []                                 # [(снимок, QRectF, t0)] — убранные, гаснут
+        self._t0 = time.monotonic()
+        self._last = self._t0
+        self._k = 0.0                                          # 0 — обычный вид, 1 — правка (уменьшены)
+        self._k_to = 0.0
+        self._press = None                                     # (действие, блок, t0) — пружинка кнопки
+        self._hover = None
+        self._timer = FrameTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._frame)
+        self._hits: list = []                                  # [(QRectF, действие, блок)]
+
+    # ── вход / выход ── #
+    def open(self):
+        lay = self.lay
+        self.setGeometry(lay.host.geometry())
+        self._snaps.clear()
+        self._cur.clear()
+        self._dying.clear()
+        for it in lay.left_items:
+            w = lay.block_widget(it)
+            self._snaps[id(it)] = w.grab()
+            self._cur[id(it)] = QRectF(w.geometry())
+            w.hide()
+        self._t0 = self._last = time.monotonic()
+        self._k, self._k_to = 0.0, 1.0
+        self.show()
+        self.raise_()
+        self.setFocus()
+        self._timer.start()
+
+    def close_edit(self):
+        """Блоки возвращаются к обычному размеру, потом на их место встают настоящие."""
+        if not self.isVisible() or self._k_to == 0.0:
+            return
+        self._k_to = 0.0
+        if ph.duration(200) <= 0:
+            self._finish_close()
+
+    def _finish_close(self):
+        self._timer.stop()
+        self.hide()
+        lay = self.lay
+        for it in lay.left_items:
+            lay.block_widget(it).show()
+        lay.relayout()
+        lay.save_left()
+
+    def refresh(self):
+        """После перестановки/удаления/добавления/смены размера: новые цели; блоку нового размера — снимок."""
+        lay = self.lay
+        lay.relayout(editing=True)
+        alive = {id(it) for it in lay.left_items}
+        for k in list(self._snaps):
+            if k not in alive:
+                self._snaps.pop(k, None)
+                self._cur.pop(k, None)
+        for it in lay.left_items:
+            w = lay.block_widget(it)
+            tgt = lay.left_rects.get(id(it))
+            if tgt is None:
+                continue
+            snap = self._snaps.get(id(it))
+            want = tgt.size() * w.devicePixelRatioF()
+            if snap is None or abs(snap.width() - want.width()) > 2 or abs(snap.height() - want.height()) > 2:
+                w.setGeometry(tgt)                              # снимок в новом размере
+                lay_ = w.layout()
+                if lay_ is not None:
+                    lay_.activate()
+                if hasattr(w, "_invalidate"):
+                    w._invalidate()
+                self._snaps[id(it)] = w.grab()
+                w.hide()
+            if id(it) not in self._cur:                        # новый — вырастает из середины
+                r = QRectF(tgt)
+                self._cur[id(it)] = r.adjusted(r.width() * .2, r.height() * .2, -r.width() * .2, -r.height() * .2)
+
+    def _frame(self):
+        now = time.monotonic()
+        dt = min(.05, now - self._last)
+        self._last = now
+        a = 1.0 - math.exp(-dt / .07)
+        self._k += (self._k_to - self._k) * (1.0 - math.exp(-dt / .06))
+        if self._k_to == 0.0 and self._k < .02:
+            self._finish_close()
+            return
+        for it in self.lay.left_items:
+            tgt = self.lay.left_rects.get(id(it))
+            cur = self._cur.get(id(it))
+            if tgt is None or cur is None:
+                continue
+            t = QRectF(tgt)
+            self._cur[id(it)] = QRectF(cur.x() + (t.x() - cur.x()) * a, cur.y() + (t.y() - cur.y()) * a,
+                                       cur.width() + (t.width() - cur.width()) * a,
+                                       cur.height() + (t.height() - cur.height()) * a)
+        self._dying = [d for d in self._dying if now - d[2] < .26]
+        self.update(self.lay.left_area().adjusted(-ph.px(24), -ph.px(24), ph.px(24), ph.px(48)))
+
+    def _spring(self, act, it) -> float:
+        """Масштаб нажатой кнопки: быстро вниз, пружиной обратно."""
+        pr = self._press
+        if pr is None or pr[0] != act or pr[1] is not it:
+            return 1.0
+        el = time.monotonic() - pr[2]
+        if el > .35:
+            return 1.0
+        return 1.0 - .22 * math.exp(-el / .07) * math.cos(el * 18)
+
+    # ── отрисовка ── #
+    def paintEvent(self, e):
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            self._hits = []
+            now = time.monotonic()
+            t = now - self._t0
+            k = max(0.0, min(1.0, self._k))
+            for pm, r, t0 in self._dying:                      # убранные: сжимаются и гаснут
+                el = (now - t0) / .26
+                s = 1.0 - .35 * el
+                p.save()
+                p.setOpacity(max(0.0, 1.0 - el))
+                c = r.center()
+                p.translate(c)
+                p.scale(s, s)
+                p.translate(-c)
+                p.drawPixmap(r, pm, QRectF(pm.rect()))
+                p.restore()
+            items = self.lay.left_items
+            for i, it in enumerate(items):
+                r = self._cur.get(id(it))
+                pm = self._snaps.get(id(it))
+                if r is None or pm is None:
+                    continue
+                ph_ = (i * 1.7) % 6.28
+                ang = math.sin(t * 2 * math.pi * 2.1 + ph_) * 0.9 * k    # чуть-чуть, как иконки на iPhone
+                dy = math.sin(t * 2 * math.pi * 1.7 + ph_ * 1.3) * .6 * k
+                sc = 1.0 - .035 * k
+                p.save()
+                c = r.center()
+                p.translate(c.x(), c.y() + dy)
+                p.rotate(ang)
+                p.scale(sc, sc)
+                p.translate(-c.x(), -c.y())
+                ph.paint_shadow(p, r, "card", float(ph.px(18)))
+                p.drawPixmap(r, pm, QRectF(pm.rect()))
+                p.setOpacity(k)
+                xr = QRectF(r.left() - ph.px(7), r.top() - ph.px(7), ph.px(24), ph.px(24))
+                self._button(p, xr, "x", True, self._spring("remove", it))
+                bs = ph.px(26)
+                ur = QRectF(r.right() - 2 * bs - ph.px(14), r.top() + ph.px(10), bs, bs)
+                dr = QRectF(r.right() - bs - ph.px(10), r.top() + ph.px(10), bs, bs)
+                up_ok, dn_ok = i > 0, i < len(items) - 1
+                self._button(p, ur, "chevron-up", up_ok, self._spring("up", it))
+                self._button(p, dr, "chevron-down", dn_ok, self._spring("down", it))
+                half = self.lay.block_size(it) == "half"          # на одну клетку / на всю ширину
+                sr = QRectF(r.right() - bs - ph.px(10), r.bottom() - bs - ph.px(10), bs, bs)
+                self._button(p, sr, "maximize-2" if half else "minimize-2", True, self._spring("size", it))
+                p.restore()
+                if k > .5:
+                    self._hits.append((xr, "remove", it))
+                    if up_ok:
+                        self._hits.append((ur, "up", it))
+                    if dn_ok:
+                        self._hits.append((dr, "down", it))
+                    if sr is not None:
+                        self._hits.append((sr, "size", it))
+            area = self.lay.left_area()                           # внизу: «Добавить» и «Готово»
+            f = ph.font(ph.TEXT_XS, 600)
+            p.setFont(f)
+            fm = QFontMetrics(f)
+            h = ph.px(30)
+            y = self.height() - ph.px(34) + (ph.px(34) - h) / 2 - ph.px(2) + (1.0 - k) * ph.px(16)
+            labels = (("+  Добавить", "add"), ("Готово", "done"))
+            ws = [fm.horizontalAdvance(t_) + ph.px(28) for t_, _a in labels]
+            x = area.center().x() - (sum(ws) + ph.px(10)) / 2
+            p.setOpacity(k)
+            for (text, act), w in zip(labels, ws):
+                rr = QRectF(x, y, w, h)
+                s = self._spring(act, None)
+                hov = self._hover == act
+                p.save()
+                c = rr.center()
+                p.translate(c)
+                p.scale(s, s)
+                p.translate(-c)
+                primary = act == "done"
+                p.setPen(QPen(ph.qcolor(ph.LINE_2 if not hov else ph.LINE_3), 1.0) if not primary else Qt.PenStyle.NoPen)
+                p.setBrush(ph.white(1.0 if hov else .92) if primary else QColor(30, 30, 30, 230) if hov
+                           else QColor(20, 20, 20, 200))
+                p.drawRoundedRect(rr, h / 2, h / 2)
+                p.setPen(QColor(10, 10, 10) if primary else ph.qcolor(ph.TEXT_PRIMARY))
+                p.drawText(rr, Qt.AlignmentFlag.AlignCenter, text)
+                p.restore()
+                if k > .5:
+                    self._hits.append((rr, act, None))
+                x += w + ph.px(10)
+        finally:
+            p.end()
+
+    def _button(self, p: QPainter, r: QRectF, icon: str, enabled: bool = True, scale: float = 1.0):
+        p.save()
+        c = r.center()
+        p.translate(c)
+        p.scale(scale, scale)
+        p.translate(-c)
+        p.setPen(QPen(ph.white(.18), 1.0))
+        p.setBrush(QColor(28, 28, 28, 235) if enabled else QColor(28, 28, 28, 120))
+        p.drawEllipse(r)
+        s = int(r.width() * .56)
+        pm = ph.icon_pixmap(icon, s, ph.TEXT_PRIMARY if enabled else ph.TEXT_GHOST, 2.2)
+        p.drawPixmap(QRectF(r.center().x() - s / 2, r.center().y() - s / 2, s, s), pm, QRectF(pm.rect()))
+        p.restore()
+
+    # ── мышь и клавиши ── #
+    def _hit(self, pos):
+        for r, act, it in reversed(self._hits):
+            if r.adjusted(-3, -3, 3, 3).contains(pos):
+                return act, it
+        return None, None
+
+    def mouseMoveEvent(self, e):
+        act, _it = self._hit(e.position())
+        self._hover = act if act in ("add", "done") else None
+        self.setCursor(Qt.CursorShape.PointingHandCursor if act else Qt.CursorShape.ArrowCursor)
+
+    def mousePressEvent(self, e):
+        act, it = self._hit(e.position())
+        if act is not None:
+            self._press = (act, it, time.monotonic())
+            self._act(act, it)
+            return
+        for it in self.lay.left_items:                         # по блоку — ничего; мимо — выйти из правки
+            r = self._cur.get(id(it))
+            if r is not None and r.contains(e.position()):
+                return
+        self.close_edit()
+
+    def _act(self, act, it):
+        lay = self.lay
+        if act == "done":
+            self.close_edit()
+        elif act == "add":
+            QTimer.singleShot(90, self._add_menu)              # сначала пружинка кнопки
+        elif act in ("up", "down"):
+            lay.move_block(it, -1 if act == "up" else 1)
+            self.refresh()
+        elif act == "size":
+            lay.set_block_size(it, "full" if lay.block_size(it) == "half" else "half")
+            self.refresh()
+        elif act == "remove":
+            r, pm = self._cur.get(id(it)), self._snaps.get(id(it))
+            if r is not None and pm is not None:
+                self._dying.append((pm, QRectF(r), time.monotonic()))
+            lay.remove_block(it)
+            self.refresh()
+
+    def _add_menu(self):
+        from PyQt6.QtWidgets import QMenu
+        import ph_cards
+        lay = self.lay
+        m = QMenu(self)
+        if "cover" not in lay.left_items:
+            m.addAction(ph.icon("image", 14), "Обложка").triggered.connect(lambda: self._add("cover"))
+        if "player" not in lay.left_items:
+            m.addAction(ph.icon("play", 14), "Плеер").triggered.connect(lambda: self._add("player"))
+        if len(lay.widgets) < 6:
+            sub = m.addMenu("Виджет")
+            for k, _kick, sub_t in ph_cards.KINDS:
+                sub.addAction(f"{sub_t}").triggered.connect(lambda _=False, kk=k: self._add(kk))
+        if m.isEmpty():
+            m.addAction("Больше добавить нечего").setEnabled(False)
+        m.exec(QCursor.pos())
+
+    def _add(self, what):
+        self.lay.add_block(what)
+        self.refresh()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.close_edit()
+            return
+        super().keyPressEvent(e)
 
 
 # ══════════════════════════════════════════════════════════════════════════ #
@@ -1189,8 +2054,12 @@ class PhantomLayout(QObject):
         super().__init__(shell)
         self.shell, self.win = shell, win
         ph.load_fonts()
-        ph.configure(**self._appearance())
+        import ph_panels
+        self.phs = ph_panels.ph_settings(win)
+        ph.configure(card_opacity=self.phs["card_opacity"], ui_scale=self.phs["ui_scale"],
+                     effects=self.phs["effects"], motion=self.phs["motion"])
         self.ready = False
+        self._panels: dict = {}
         # ── прежние кнопки и плеер: живут, но не видны ── #
         self.holder = QWidget(shell)
         self.holder.hide()
@@ -1214,15 +2083,23 @@ class PhantomLayout(QObject):
         self.island = PhIsland(self, self.host)
         self.cover = PhCoverCard(self, self.host)
         self.player = PhPlayerCard(self, self.host)
-        kinds = (win.settings.get("ph_widgets") or ["visualizer", "clock"])[:2]
-        while len(kinds) < 2:
-            kinds.append("clock")
-        self.widgets = [PhWidgetCard(self, k, self.host) for k in kinds]
+        self.left_items: list = []                             # левая колонка сверху вниз: "cover", "player", карточки
+        self.left_rects: dict = {}
+        self.widgets: list = []
+        self._build_left()
         self.right = PhRightColumn(self, self.host)
+        self.edit = PhEditLayer(self, self.root)               # правка колонки (зажать колёсико мыши)
+        self._hold = QTimer(self)
+        self._hold.setSingleShot(True)
+        self._hold.setInterval(450)
+        self._hold.timeout.connect(self.toggle_edit)
+        QApplication.instance().installEventFilter(self)
+        import ph_motion                                       # подсветка и «волна» нажатия у всех кнопок
+        ph_motion.install(win)
         self.overlay = PhOverlay(self, self.root)
         self.overlay.set_content(shell.stack)
         self.overlay.closed.connect(self._overlay_closed)
-        shell._badge_on(self.top.b_planet)                     # непрочитанное Echoes.NET — на «планете»
+        shell._badge_on(self.top.b_net)                        # непрочитанное Echoes.NET — на кнопке сети
         # «Ещё», «Звук» и реакция всплывают у «⋯» карточки плеера
         shell.b_pmore = shell.b_sound = shell.b_moment = self.player.b_more
         self._loader = CoverLoader(self)
@@ -1237,14 +2114,67 @@ class PhantomLayout(QObject):
         self.top.mode.set_current(self.mode)
         self.right.set_mode(self.mode)
         self.relayout()
+        self.apply_appearance(None)
         self.root.show()
+        import inapp                                           # окна из настроек — страницей внутри панели
+        inapp.EMBED = self._embed_host
 
-    @staticmethod
-    def _appearance() -> dict:
-        return {}
+    # ── настройки Phantom (ph_panels) ── #
+    def apply_appearance(self, keys):
+        """Применить настройки Phantom (keys — что поменялось; None — всё)."""
+        import ph_panels
+        s = self.phs = ph_panels.ph_settings(self.win)
+        every = keys is None
+        keys = set(keys or ())
+        if every or keys & {"card_opacity", "effects", "motion"}:
+            ph.configure(card_opacity=s["card_opacity"], effects=s["effects"], motion=s["motion"])
+            if not every:
+                self.root.setStyleSheet(ph.qss())
+                self.host.update()
+        if every or keys & {"bg_intensity", "bg_animation", "bg_brightness", "bg_image", "effects", "motion"}:
+            img = s["bg_image"] if s["bg_image"] and Path(s["bg_image"]).exists() else                 (str(ph_backdrop.DEFAULT_IMAGE) if ph_backdrop.DEFAULT_IMAGE.exists() else None)
+            self.bg.configure(intensity=s["bg_intensity"], brightness=s["bg_brightness"],
+                              animated=s["bg_animation"], image=img if (every or "bg_image" in keys) else ...)
+            if "effects" in keys:
+                self.bg._rebuild_static()
+        if every or "cover_treatment" in keys:
+            self.cover.set_treatment(s["cover_treatment"])
+        if every or "cover_style" in keys:
+            self.cover.set_style(s.get("cover_style", "info"))
+        if every or keys & {"cover_video", "cover_video_path", "cover_rules"}:
+            self.refresh_cover_media()          # своя обложка по правилам (и прежнее «видео вместо обложки»)
+        if not every and keys & {"lyrics_scale", "lyrics_blur", "lyrics_words", "lyrics_autoscroll"}:
+            self.shell._lyr_src = None
+            try:
+                self.shell._lyrics_tick(None, None)
+            except Exception as e:                             # noqa: BLE001
+                print("[ph] lyrics:", e)
+
+    def rebuild(self):
+        """Пересобрать оболочку (масштаб интерфейса, сброс раздела) — музыка не прерывается."""
+        import ya_skin
+        QTimer.singleShot(0, lambda: ya_skin.reskin(self.win))
+
+    def page_widget(self, key: str):
+        """Панель Phantom вместо страницы Echoes (Библиотека, Очередь, Настройки) или None."""
+        import ph_panels
+        cls = {"collection": ph_panels.PhLibraryPanel, "queue": ph_panels.PhQueuePanel}.get(key)
+        # настройки — одна страница Echoes (SettingsHub) с разделами Phantom внутри, отдельной панели нет
+        if cls is None or not self.ready:
+            return None
+        if key == "settings" and self.overlay.settings_tab() == "echoes":
+            return None
+        w = self._panels.get(key)
+        if w is None:
+            w = self._panels[key] = cls(self, self.shell.stack)   # сразу внутри оболочки — QSS Phantom
+            self.shell.stack.addWidget(w)                          # с самого начала (иначе подписи кнопок
+                                                                   # считались по чужому стилю и обрезались)
+        if hasattr(w, "refresh"):
+            w.refresh(force=True)
+        return w
 
     # ── геометрия ── #
-    def relayout(self):
+    def relayout(self, editing: bool = False):
         sh = self.shell
         W, H = sh.width(), sh.height()
         self.root.setGeometry(0, 0, W, H)
@@ -1262,21 +2192,15 @@ class PhantomLayout(QObject):
         x0, y0 = g, top_h
         bottom = ph.px(36)
         avail = H - y0 - bottom
-        card_h = ph.px(186)
-        wid_h = max(ph.px(130), min(ph.px(210), int(avail * .27)))
-        cgap = ph.px(18)
-        cov_h = max(ph.px(120), avail - card_h - wid_h - 2 * cgap)
-        if cov_h > lw * .72:                                   # высокое окно — обложка не выше 72 % ширины
-            extra = cov_h - int(lw * .72)
-            cov_h -= extra
-            wid_h = min(wid_h + extra, ph.px(260))
-        self.cover.setGeometry(x0, y0, lw, cov_h)
-        y = y0 + cov_h + cgap
-        self.player.setGeometry(x0, y, lw, card_h)
-        y += card_h + cgap
-        ww = (lw - cgap) // 2
-        for i, wc in enumerate(self.widgets):
-            wc.setGeometry(x0 + i * (ww + cgap), y, ww if i == 0 else lw - ww - cgap, max(ph.px(110), H - y - bottom))
+        self._left_area = QRect(x0, y0, lw, avail)
+        self.left_rects = self._left_rects(x0, y0, lw, avail)
+        if not editing:
+            for it in self.left_items:
+                r = self.left_rects.get(id(it))
+                if r is not None:
+                    self.block_widget(it).setGeometry(r)
+        if self.edit.isVisible():
+            self.edit.setGeometry(self.host.geometry())
         rx = x0 + lw + gap
         self.right.setGeometry(rx, top_h - ph.px(2), W - rx - g, H - top_h + ph.px(2))
         # пылинки — только там, где нет стекла
@@ -1286,7 +2210,7 @@ class PhantomLayout(QObject):
     def _occlude(self):
         """Пылинки — только там, где нет стекла и текста (под ними их не видно, а каждая будила бы перерисовку
         панели текста)."""
-        rects = [w.geometry() for w in (self.cover, self.player, *self.widgets)]
+        rects = [self.block_widget(it).geometry() for it in self.left_items]
         if self.mode == "text":
             rects.append(self.right.geometry())
         self.bg.set_occluders(rects)
@@ -1328,7 +2252,22 @@ class PhantomLayout(QObject):
             key = "foryou"
         sh.show_page(key)
 
+    def open_shop(self):
+        self._ensure_shop()
+        self.shell.show_page("shop")
+
+    def _ensure_shop(self):
+        """Магазин и поддержка (ph_shop) — страница создаётся при первом открытии."""
+        sh = self.shell
+        if "shop" not in sh.pages:
+            import ph_shop
+            page = ph_shop.ShopPage(self)
+            sh.pages["shop"] = page
+            sh.stack.addWidget(page)
+
     def toggle_page(self, key: str):
+        if key == "shop":
+            self._ensure_shop()
         ov = self.overlay
         cur = self.shell._cur_page
         if ov.is_open() and (cur == key or (key == "collection" and cur == "playlist")):
@@ -1347,7 +2286,14 @@ class PhantomLayout(QObject):
                 title = str(sh.__dict__.get("_pl_name", "") or title)
                 if sh.__dict__.get("_pl_kind") == "album":
                     kick = "Album"
-            self.overlay.configure("drawer", kick, title, back=key == "playlist")
+            wide = key in ("settings", "listening")            # настройки — панелью сбоку, пошире
+            self.overlay.configure("side" if wide else "drawer", kick, title, back=key == "playlist")
+        elif key == "net":                                     # Echoes.NET — своя панель, без вкладок разделов
+            title = "Echoes.NET"
+            self.overlay.configure("wide", "Network", title)
+        elif key == "shop":                                    # магазин косметики и поддержка ECHOES
+            title = "Магазин"
+            self.overlay.configure("wide", "Store", title)
         else:
             title = PLANET_TITLES.get(key, "Echoes")
             sub = ""
@@ -1356,10 +2302,45 @@ class PhantomLayout(QObject):
             if key in {k for k, _t, _i in PLANET_MENU}:
                 self.win.settings["ph_planet"] = key
             self.overlay.configure("planet", "Echoes", title, sub, menu_key=key, back=key not in PLANET_KEYS - {"artist"})
+        self._hide_page_title(sh.pages.get(key), {title, PLANET_TITLES.get(key, ""), DRAWERS.get(key, ("", ""))[1],
+                                                  sh.NAV_TEXT.get(key, "")})
         self.overlay.open()
         self.top.sync_checked(key)
 
+    @staticmethod
+    def _hide_page_title(page, titles: set):
+        """Заголовок страницы уже в шапке панели — свой крупный заголовок страницы (тот же текст) прячется."""
+        if page is None:
+            return
+        titles = {t.strip().lower() for t in titles if t}
+        import re as _re
+        for lb in page.findChildren(QLabel):
+            text = _re.sub(r"<[^>]+>", "", lb.text()).strip().lower()
+            big = lb.objectName() in ("YaH1", "YaHero", "YaPageTitle") or lb.font().pixelSize() >= 18
+            if big and text in titles:
+                if not lb.isHidden():
+                    lb.hide()
+                break
+
+    def _embed_host(self, content):
+        """Окно, открытое из настроек, — страницей внутри панели настроек (с «‹ Назад»), а не всплывашкой.
+        Маленькие вопросы («Удалить?», «Название плейлиста») остаются всплывающими."""
+        ov = self.overlay
+        if not ov.is_open() or self.shell._cur_page not in ("settings", "listening"):
+            return None
+        hint = content.sizeHint()
+        if hint.height() < 220 and hint.width() < 520:
+            return None
+        return ov.body
+
     def close_overlay(self, instant: bool = False):
+        try:                                                   # страницы-окна внутри панели закрываются с ней
+            import inapp
+            for L in list(inapp._layers):
+                if getattr(L, "host", None) is self.overlay.body:
+                    L.request_close()
+        except Exception as e:                                 # noqa: BLE001
+            print("[ph] embedded:", e)
         self.overlay.close(instant)
         self.top.sync_checked(None)
 
@@ -1397,15 +2378,29 @@ class PhantomLayout(QObject):
         self.right.live.set_track(t, QImage())
         self.right.live.set_next((self.upcoming(1) or [None])[0])
 
+    def refresh_cover_media(self):
+        """Своя обложка для играющего трека: самое точное подходящее правило (ph_cover.resolve)."""
+        import ph_cover
+        t = self.__dict__.get("_cover_for")
+        try:
+            rule = ph_cover.resolve(self.win, t, not self.cover._img.isNull())
+        except Exception as e:                                 # noqa: BLE001
+            print("[ph] cover rules:", e)
+            rule = None
+        self.cover.set_media(rule)
+
     def _on_cover(self, img: QImage):
         t = self._cover_for
+        self.cover.set_track(t)
         self.cover.set_image(img, _title(t) if t else "", _artist(t) if t else "")
+        self.refresh_cover_media()
         self.island.set_track(t, QPixmap.fromImage(img) if not img.isNull() else None)
         self.right.live.set_track(t, img)
 
     def tick(self, playing: bool, pos: float, dur: float):
         self.player.tick(playing, pos, dur)
         self.island.set_playing(playing)
+        self.cover.set_playing(playing)
         now = time.monotonic()
         if now - self.__dict__.get("_slow_t", 0.0) >= 1.0:   # раз в секунду: виджеты, «Далее», значки текста
             self._slow_t = now
@@ -1416,11 +2411,186 @@ class PhantomLayout(QObject):
                 self.right.live.set_next((self.upcoming(1) or [None])[0])
             else:
                 self.right.sync_tools()
+            if self.overlay.is_open():                           # открытая панель Phantom — свежие данные
+                cur = self.shell.stack.currentWidget()
+                for key in ("queue", "collection"):
+                    w = self._panels.get(key)
+                    if w is not None and w is cur:
+                        w.refresh()
 
     def save_widgets(self):
         self.win.settings["ph_widgets"] = [wc.widget_kind() for wc in self.widgets]
 
+    # ── левая колонка: состав и порядок блоков (правка — PhEditLayer) ── #
+    def _build_left(self):
+        s = self.win.settings
+        order = s.get("ph_left") or ["cover", "player", "w", "w"]
+        kinds = list(s.get("ph_widgets") or ["visualizer", "clock"])
+        items, sizes = [], {}
+        for raw in order:
+            name, _, size = str(raw).partition(":")
+            if name in ("cover", "player"):
+                if name in items:
+                    continue
+                it = "cover" if name == "cover" else "player"     # те же строки, что в коде (не копии из настроек)
+            elif name == "w":
+                it = PhWidgetCard(self, kinds.pop(0) if kinds else "clock", self.host)
+            else:
+                continue
+            items.append(it)
+            sizes[self._skey(it)] = size if size in ("half", "full") else self._default_size(it)
+        self.left_items = items
+        self.left_sizes = sizes
+        self.widgets = [x for x in items if not isinstance(x, str)]
+        self.cover.setVisible("cover" in items)
+        self.player.setVisible("player" in items)
+
+    @staticmethod
+    def _default_size(it) -> str:
+        return "full" if isinstance(it, str) else "half"
+
+    @staticmethod
+    def _skey(it):
+        return it if isinstance(it, str) else id(it)
+
+    def block_size(self, it) -> str:
+        return self.__dict__.setdefault("left_sizes", {}).get(self._skey(it)) or self._default_size(it)
+
+    def set_block_size(self, it, size: str):
+        self.left_sizes[self._skey(it)] = "half" if size == "half" else "full"
+        self.save_left()
+
+    def save_left(self):
+        out = []
+        for x in self.left_items:
+            name = x if isinstance(x, str) else "w"
+            size = self.block_size(x)
+            out.append(name if size == self._default_size(x) else f"{name}:{size}")
+        self.win.settings["ph_left"] = out
+        self.save_widgets()
+
+    def block_widget(self, it) -> QWidget:
+        return self.cover if it == "cover" else self.player if it == "player" else it
+
+    def left_area(self) -> QRect:
+        return QRect(self.__dict__.get("_left_area") or QRect())
+
+    def _left_rows(self):
+        """Блоки по рядам: «на всю ширину» — по ряду; «на одну клетку» подряд — по два в ряд."""
+        rows = []
+        for it in self.left_items:
+            if self.block_size(it) == "full":
+                rows.append([it])
+            elif rows and len(rows[-1]) == 1 and self.block_size(rows[-1][0]) == "half":
+                rows[-1].append(it)
+            else:
+                rows.append([it])
+        return rows
+
+    def _left_rects(self, x0, y0, lw, avail) -> dict:
+        rows = self._left_rows()
+        if not rows:
+            return {}
+        cgap = ph.px(18)
+        card_h = ph.px(186)
+        half_w = (lw - cgap) // 2
+
+        def kind(row):
+            if "player" in row:
+                return "player"
+            if "cover" in row:
+                return "cover" if self.block_size("cover") == "full" else "square"
+            return "w"
+        kinds = [kind(r) for r in rows]
+        nw = kinds.count("w")
+        wid_h = max(ph.px(130), min(ph.px(210), int(avail * .27)))
+        fixed = card_h * kinds.count("player") + half_w * kinds.count("square") + cgap * (len(rows) - 1)
+        cov_h = 0
+        if "cover" in kinds:
+            cov_h = max(ph.px(120), min(int(lw * .72), avail - fixed - wid_h * nw))
+        rest = avail - fixed - cov_h - wid_h * nw
+        if nw:
+            if rest > 0:
+                wid_h = min(ph.px(260), wid_h + rest // nw)
+            else:
+                wid_h = max(ph.px(96), wid_h + rest // nw)
+        out, y = {}, y0
+        for i, (row, k) in enumerate(zip(rows, kinds)):
+            h = {"cover": cov_h, "player": card_h, "square": half_w}.get(k, wid_h)
+            if i == len(rows) - 1 and k == "w":                # последний ряд виджетов — до низа колонки
+                h = max(h, y0 + avail - y)
+            if len(row) == 1:
+                w = lw if self.block_size(row[0]) == "full" else half_w
+                out[id(row[0])] = QRect(x0, y, w, h)
+            else:
+                out[id(row[0])] = QRect(x0, y, half_w, h)
+                out[id(row[1])] = QRect(x0 + half_w + cgap, y, lw - half_w - cgap, h)
+            y += h + cgap
+        return out
+
+    def move_block(self, it, d: int):
+        i = self.left_items.index(it)
+        j = i + d
+        if 0 <= j < len(self.left_items):
+            self.left_items[i], self.left_items[j] = self.left_items[j], self.left_items[i]
+            self.widgets = [x for x in self.left_items if not isinstance(x, str)]
+            self.save_left()
+
+    def remove_block(self, it):
+        if it not in self.left_items:
+            return
+        self.left_items.remove(it)
+        w = self.block_widget(it)
+        w.hide()
+        if not isinstance(it, str):
+            self.widgets = [x for x in self.left_items if not isinstance(x, str)]
+            w.deleteLater()
+        self.save_left()
+
+    def add_block(self, what: str):
+        """what: "cover" | "player" | вид виджета. Обложка — наверх, плеер — под ней, виджет — вниз."""
+        if what in ("cover", "player"):
+            if what in self.left_items:
+                return what
+            it = what
+            pos = 0 if what == "cover" else (1 if "cover" in self.left_items[:1] else 0)
+            self.left_items.insert(pos, it)
+            self.left_sizes[self._skey(it)] = "full"
+        else:
+            it = PhWidgetCard(self, what, self.host)
+            self.left_items.append(it)
+            self.left_sizes[self._skey(it)] = "half"
+            self.widgets = [x for x in self.left_items if not isinstance(x, str)]
+        if not self.edit.isVisible():
+            self.block_widget(it).show()
+            self.relayout()
+        self.save_left()
+        return it
+
+    def toggle_edit(self):
+        if self.edit.isVisible():
+            self.edit.close_edit()
+        elif not self.overlay.isVisible():
+            self.relayout()
+            self.edit.open()
+
+    def eventFilter(self, obj, ev):
+        """Зажатое колёсико мыши над левой колонкой — режим правки (или выход из него)."""
+        t = ev.type()
+        if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.MiddleButton:
+            if isinstance(obj, QWidget) and obj.window() is self.win and not self.overlay.isVisible():
+                lp = self.host.mapFromGlobal(ev.globalPosition().toPoint())
+                m = ph.px(10)
+                if self.left_area().adjusted(-m, -m, m, m).contains(lp):
+                    self._hold.start()
+        elif t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.MiddleButton:
+            self._hold.stop()
+        return False
+
     def shutdown(self):
+        import inapp
+        if getattr(inapp, "EMBED", None) == self._embed_host:
+            inapp.EMBED = None
         tb = getattr(self.win, "titlebar", None)
         if tb is not None and self._tb_hidden:
             tb.show()

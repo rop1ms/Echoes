@@ -34,21 +34,50 @@ FONTS = [
     ("type", "Машинка", "Special Elite", "PT Mono"),
 ]
 FONT_KEYS = {k for k, *_ in FONTS}
-EFFECTS = [("solid", "Минималистичный"), ("gradient", "Градиент"), ("neon", "Неон"), ("toon", "Мультфильм"),
+EFFECTS = [("solid", "Минималистичный"), ("silver", "Серебро"), ("shimmer", "Блик"), ("halo", "Ореол"),
+           ("outline", "Контур"), ("chrome", "Хром"),
+           ("gradient", "Градиент"), ("neon", "Неон"), ("toon", "Мультфильм"),
            ("pop", "Выделение"), ("gummy", "Гамми"), ("prism", "Призма")]
+ANIMATED = ("prism", "neon", "shimmer", "halo", "chrome")      # эффекты, которые двигаются (общий таймер)
 FX_KEYS = {k for k, _ in EFFECTS}
 COLORS = ["#ffffff", "#ff5c8a", "#ff9f43", "#ffdb1a", "#4cd964", "#38c6ff", "#7c5cff", "#c86bff"]
 _HEX = re.compile(r"#[0-9a-fA-F]{6}")
 _loaded = False
 
 
+_pending = None
+
+
+_FILE_OF = {"PT Mono": "ptm55ft"}                              # у этого шрифта имя файла не похоже на название
+
+
+def _need(family: str):
+    """Подключить только файлы одного шрифта. Каждый подключённый шрифт заставляет Qt заново подобрать шрифты
+    всем виджетам окна — двадцать файлов разом давали ~0.3 с паузы при первом открытии профиля. Обычному нику
+    («gg») шрифты не нужны вовсе, а нику со стилем — два файла."""
+    global _loaded, _pending
+    if not family or _loaded:
+        return
+    if _pending is None:
+        _pending = sorted(FONT_DIR.glob("*.ttf"), reverse=True)
+    pre = _FILE_OF.get(family, family.replace(" ", "").lower())
+    for f in [f for f in _pending if f.name.lower().startswith(pre)]:
+        QFontDatabase.addApplicationFont(str(f))
+        _pending.remove(f)
+    if not _pending:
+        _loaded = True
+
+
 def _load_fonts():
-    global _loaded
+    """Все шрифты ников разом — для окна выбора стиля (там видны все)."""
+    global _loaded, _pending
     if _loaded:
         return
+    if _pending is None:
+        _pending = sorted(FONT_DIR.glob("*.ttf"), reverse=True)
+    while _pending:
+        QFontDatabase.addApplicationFont(str(_pending.pop()))
     _loaded = True
-    for f in sorted(FONT_DIR.glob("*.ttf")):
-        QFontDatabase.addApplicationFont(str(f))
 
 
 def clean(spec) -> dict:
@@ -66,9 +95,10 @@ def clean(spec) -> dict:
 
 
 def font_for(key, px, weight=QFont.Weight.Black) -> QFont:
-    _load_fonts()
     f = QFont()
     fam = next(((a, b) for k, _, a, b in FONTS if k == key), ("", ""))
+    _need(fam[0])
+    _need(fam[1])
     if fam[0]:
         f.setFamilies([fam[0], fam[1]])
         f.setWeight(QFont.Weight.Normal if key in ("bangers", "chicle", "fraktur", "creep", "type", "cherry")
@@ -136,6 +166,49 @@ def paint_nick(p: QPainter, rect: QRectF, text: str, spec: dict, px: float, t: f
     p.setPen(Qt.PenStyle.NoPen)
     if fx == "solid":
         p.setBrush(c1)
+        p.drawPath(path)
+    elif fx == "silver":                                       # Phantom: металл — светлый верх, холодный низ
+        g = QLinearGradient(br.topLeft(), br.bottomLeft())
+        g.setColorAt(0, QColor(255, 255, 255))
+        g.setColorAt(.55, QColor(196, 200, 210))
+        g.setColorAt(1, QColor(240, 242, 248))
+        p.setBrush(QColor(0, 0, 0, 90))
+        p.drawPath(path.translated(0, max(1.0, px * .04)))
+        p.setBrush(g)
+        p.drawPath(path)
+    elif fx == "shimmer":                                      # Phantom: по нику пробегает световой блик
+        p.setBrush(QColor(c1))
+        p.drawPath(path)
+        span = br.width() * .35
+        x0 = br.left() - span + ((t * .45) % 1.6) / 1.6 * (br.width() + 2 * span)
+        g = QLinearGradient(QPointF(x0, br.top()), QPointF(x0 + span, br.bottom()))
+        g.setColorAt(0, QColor(255, 255, 255, 0))
+        g.setColorAt(.5, QColor(255, 255, 255, 230))
+        g.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setClipPath(path)
+        p.setBrush(g)
+        p.drawRect(br.adjusted(-span, 0, span, 0))
+    elif fx == "halo":                                         # Phantom: мягкий белый ореол дышит
+        k = .6 + .4 * math.sin(t * 1.8)
+        for w_, a in ((px * .34, 18), (px * .18, 34)):
+            c = QColor(c1)
+            c.setAlpha(int(a * k))
+            p.strokePath(path, QPen(c, w_, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(QColor(c1))
+        p.drawPath(path)
+    elif fx == "outline":                                      # Phantom: тонкий контур, внутри стекло
+        c = QColor(c1)
+        c.setAlpha(40)
+        p.setBrush(c)
+        p.drawPath(path)
+        p.strokePath(path, QPen(QColor(c1), max(1.0, px * .045), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                Qt.PenJoinStyle.RoundJoin))
+    elif fx == "chrome":                                       # Phantom: хром — полосы отражения медленно едут
+        g = QLinearGradient(br.topLeft(), br.bottomRight())
+        sh = (t * .12) % 1.0
+        for i, v in enumerate((250, 150, 255, 120, 235, 170, 250)):
+            g.setColorAt((i / 6 + sh) % 1.0 if i not in (0, 6) else i / 6, QColor(v, v, min(255, v + 8)))
+        p.setBrush(g)
         p.drawPath(path)
     elif fx == "gradient":
         g = QLinearGradient(br.topLeft(), br.topRight())
@@ -224,7 +297,7 @@ class NickLabel(QWidget):
         self.update()
 
     def _anim(self):
-        return self.spec.get("fx") in ("prism", "neon")
+        return self.spec.get("fx") in ANIMATED
 
     def _fit(self):
         fm = QFontMetricsF(font_for(self.spec.get("font", "gg"), self.px))
@@ -376,7 +449,7 @@ class NickStyleDialog(QDialog):
         v.addLayout(row)
         self._sync()
         self._t = QTimer(self)
-        self._t.timeout.connect(lambda: [t.update() for k, t in self.fx_tiles.items() if k in ("prism", "neon")])
+        self._t.timeout.connect(lambda: [t.update() for k, t in self.fx_tiles.items() if k in ANIMATED])
         self._t.start(60)
 
     def _h(self, title, sub=""):

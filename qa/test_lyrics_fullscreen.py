@@ -13,6 +13,7 @@ exec(compile(source.split("win = None")[0], str(Path(__file__).with_name("ui_smo
 import json as _json  # noqa: E402
 _st = _json.loads((data / "settings.json").read_text("utf-8"))   # свой заголовок окна — как у пользователя
 _st["custom_titlebar"] = True
+_st["ya_layout"] = "new"                                   # экран «Сейчас играет» — у прежнего вида
 (data / "settings.json").write_text(_json.dumps(_st), encoding="utf-8")
 import main  # noqa: E402
 

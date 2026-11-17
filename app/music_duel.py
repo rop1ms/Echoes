@@ -10,7 +10,7 @@ import threading
 import time
 from copy import deepcopy
 from pathlib import Path
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QPoint, QSize, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QRect, QRectF, QPointF, QPoint, QSize, QEvent, pyqtSignal
 from frameclock import FrameTimer
 from PyQt6.QtGui import (QColor, QPainter, QPainterPath, QPen, QBrush, QFont, QFontMetrics, QPixmap, QImage,
                          QLinearGradient, QRadialGradient, QTransform, QPolygonF)
@@ -129,6 +129,23 @@ def ease_out_elastic(p):
     return 2**(-10*p)*math.sin((p*10-0.75)*(2*math.pi)/3)+1
 
 GOLD=QColor("#ffdb1a")
+
+
+def _ph():
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def _g(c):
+    """Вид Phantom — монохром: цвет → серый той же яркости (золото, подсветка обложек); иначе как был."""
+    q=QColor(c)
+    if not _ph():return q
+    v=max(30,min(250,int(.299*q.red()+.587*q.green()+.114*q.blue())))
+    import ph_style                                             # серый с оттенком картинки фона
+    return ph_style.tone(v,q.alpha())
 CHAMP_SCALE=0.88                       # чемпион чуть меньше — над ним корона, под ним надпись
 INK=QColor(14,13,18)
 
@@ -167,6 +184,7 @@ def _gl_possible(win):
     """Окно уже на GPU-совмещении (ya_wave.gpu_anchor) — арену можно рисовать видеокартой."""
     import os
     if os.environ.get('ECHOES_NO_GPU_DUEL')=='1' or (os.environ.get('QT_QPA_PLATFORM') or '').startswith('offscreen'):return False
+    if _ph():return False                                       # Phantom: арена поверх стекла панели — растром
     anchor=getattr(win,'_gpu_anchor',None)
     try:return anchor is not None and anchor.ok()
     except RuntimeError:return False
@@ -491,15 +509,31 @@ class Arena(QWidget):
     # ── отрисовка ── #
     def _background(self, size=None):
         W,H=(size.width(),size.height()) if size is not None else (self.width(),self.height())
-        key=(W,H,self.devicePixelRatioF(),tuple(s.color.rgb() for s in self.sprites if s.side is not None))
+        glass_key=None
+        if _ph():                                              # Phantom: фон за панелью вместо чёрного стекла
+            try:
+                import ph_shell
+                glass_key=ph_shell.backdrop_key(self)
+            except Exception:                                  # noqa: BLE001
+                glass_key=None
+        key=(W,H,self.devicePixelRatioF(),tuple(s.color.rgb() for s in self.sprites if s.side is not None),glass_key)
         if self.bg is not None and self.bg_key==key:return self.bg
         dpr=self.devicePixelRatioF()
-        from echo_glass import liquid_surface
-        pm=liquid_surface(QSize(int(W*dpr),int(H*dpr)),radius=22*dpr)
-        pm.setDevicePixelRatio(dpr)
+        if glass_key is not None:
+            import ph_shell
+            import ph_style
+            pm=QPixmap(int(W*dpr),int(H*dpr));pm.setDevicePixelRatio(dpr);pm.fill(QColor(0,0,0,0))
+            gp=QPainter(pm)
+            ph_shell.paint_backdrop(self,gp,QRect(0,0,W,H))     # непрозрачная арена: под ней — то, что за панелью
+            ph_style.paint_surface(gp,QRectF(0,0,W,H),"panel",22)
+            gp.end()
+        else:
+            from echo_glass import liquid_surface
+            pm=liquid_surface(QSize(int(W*dpr),int(H*dpr)),radius=22*dpr)
+            pm.setDevicePixelRatio(dpr)
         p=QPainter(pm);p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path=QPainterPath();path.addRoundedRect(QRectF(0,0,W,H),22,22);p.setClipPath(path)
-        cols=[s.color for s in sorted([s for s in self.sprites if s.side is not None],key=lambda s:s.side)]
+        cols=[_g(s.color) for s in sorted([s for s in self.sprites if s.side is not None],key=lambda s:s.side)]
         if len(cols)==1:cols=cols*2
         for i,c in enumerate(cols[:2]):
             # Light comes in through the edges; the middle remains black glass.
@@ -581,9 +615,9 @@ class Arena(QWidget):
             bw=min(420,W-200);r=QRectF(W/2-bw/2,22,bw,6)
             p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(255,255,255,24));p.drawRoundedRect(r,3,3)
             fr=QRectF(r.x(),r.y(),max(6,r.width()*self.progress_shown),r.height())
-            g=QLinearGradient(fr.topLeft(),fr.topRight());g.setColorAt(0,QColor("#a78b24"));g.setColorAt(1,GOLD)
+            g=QLinearGradient(fr.topLeft(),fr.topRight());g.setColorAt(0,_g("#a78b24"));g.setColorAt(1,_g(GOLD))
             p.setBrush(QBrush(g));p.drawRoundedRect(fr,3,3)
-            gl=QColor(GOLD);gl.setAlpha(int(90+60*math.sin(now*4)));p.setBrush(gl);p.drawEllipse(QPointF(fr.right(),fr.center().y()),7,7)
+            gl=_g(GOLD);gl.setAlpha(int(90+60*math.sin(now*4)));p.setBrush(gl);p.drawEllipse(QPointF(fr.right(),fr.center().y()),7,7)
         if self.round_text and self.sprites:
             p.setFont(_font(13,QFont.Weight.Black));p.setPen(QColor(235,235,245,210))
             self._text(p,QRectF(0,34,W,24),Qt.AlignmentFlag.AlignCenter,self.round_text.upper())
@@ -645,7 +679,7 @@ class Arena(QWidget):
                 br=QRectF(-cw/2+pad,ch/2-pad-40,cs,40)
                 hv=s.hover*(1-s.play_hover)
                 g=QLinearGradient(br.topLeft(),br.topRight())
-                c1=QColor("#fff0a0") if hv>0.5 else QColor("#23272d");c2=QColor(GOLD) if hv>0.5 else QColor("#080a0d")
+                c1=_g("#fff0a0") if hv>0.5 else QColor("#23272d");c2=_g(GOLD) if hv>0.5 else QColor("#080a0d")
                 g.setColorAt(0,c1);g.setColorAt(1,c2);p.setBrush(QBrush(g));p.drawRoundedRect(br,14,14)
                 p.setFont(_font(14,QFont.Weight.Black));p.setPen(INK if hv>0.5 else QColor(235,235,240))
                 arrow='←' if s.side==0 else '→'
@@ -656,7 +690,7 @@ class Arena(QWidget):
             from duel_settings import tr
             txt=tr(self.page.win,txt,f'CHAMPION · {self.streak} WINS')
             p.setFont(_font(11,QFont.Weight.Black));tw=self._adv(p.font(),txt)+22
-            tr=QRectF(-tw/2,-ch/2+pad+8,tw,22);p.setPen(Qt.PenStyle.NoPen);p.setBrush(GOLD);p.drawRoundedRect(tr,11,11)
+            tr=QRectF(-tw/2,-ch/2+pad+8,tw,22);p.setPen(Qt.PenStyle.NoPen);p.setBrush(_g(GOLD));p.drawRoundedRect(tr,11,11)
             p.setPen(INK);self._text(p,tr,Qt.AlignmentFlag.AlignCenter,txt)
         if s.v['dim']>0.01:
             path=QPainterPath();path.addRoundedRect(r,24,24);p.fillPath(path,QColor(10,10,14,int(200*s.v['dim'])))
@@ -665,13 +699,13 @@ class Arena(QWidget):
             p.save();p.translate(0,-ch*0.12);p.rotate(-12);p.scale(max(0.01,st),max(0.01,st))
             p.setOpacity(a*min(1.0,st));f=_font(max(22,cw*0.15),QFont.Weight.Black);p.setFont(f)
             tw=self._adv(f,'ПОБЕДА')+36;th=QFontMetrics(f).height()+12
-            box=QRectF(-tw/2,-th/2,tw,th);p.setPen(QPen(GOLD,4));p.setBrush(QColor(14,13,18,200));p.drawRoundedRect(box,12,12)
-            p.setPen(GOLD);self._text(p,box,Qt.AlignmentFlag.AlignCenter,'ПОБЕДА');p.restore()
+            box=QRectF(-tw/2,-th/2,tw,th);p.setPen(QPen(_g(GOLD),4));p.setBrush(QColor(14,13,18,200));p.drawRoundedRect(box,12,12)
+            p.setPen(_g(GOLD));self._text(p,box,Qt.AlignmentFlag.AlignCenter,'ПОБЕДА');p.restore()
         p.restore()
         if self.champ>0 and s.side==0 and not s.leaving and len([x for x in self.sprites if not x.leaving])==1:
             p.save();p.setOpacity(self.champ)
             self._paint_crown(p,QPointF(c.x(),c.y()-ch*sc/2-14+math.sin(now*2.2)*4),1.5,now)
-            p.setFont(_font(30,QFont.Weight.Black));p.setPen(GOLD)
+            p.setFont(_font(30,QFont.Weight.Black));p.setPen(_g(GOLD))
             self._text(p,QRectF(0,c.y()+ch*sc/2+4,self.width(),40),Qt.AlignmentFlag.AlignCenter,'ВАШ ЧЕМПИОН')
             p.restore()
     def _text(self,p,rect,flags,text):
@@ -727,7 +761,7 @@ class Arena(QWidget):
         p.save();p.translate(at);p.scale(k,k)
         pts=[(-26,0),(-30,-26),(-14,-12),(0,-32),(14,-12),(30,-26),(26,0)]
         poly=QPolygonF([QPointF(x,y) for x,y in pts])
-        g=QLinearGradient(0,-32,0,0);g.setColorAt(0,QColor(255,236,140));g.setColorAt(1,QColor(240,170,30))
+        g=QLinearGradient(0,-32,0,0);g.setColorAt(0,_g(QColor(255,236,140)));g.setColorAt(1,_g(QColor(240,170,30)))
         p.setPen(QPen(QColor(120,70,0),2));p.setBrush(QBrush(g));p.drawPolygon(poly)
         p.setPen(Qt.PenStyle.NoPen)
         for x,y in ((-30,-26),(0,-32),(30,-26)):p.setBrush(QColor(255,80,120));p.drawEllipse(QPointF(x,y),4,4)
@@ -738,7 +772,7 @@ class Arena(QWidget):
         p.save();p.translate(c);p.rotate(now*12);p.setPen(Qt.PenStyle.NoPen)
         R=max(W,H)
         for i in range(16):
-            col=QColor(GOLD);col.setAlpha(int(34*self.champ));p.setBrush(col)
+            col=_g(GOLD);col.setAlpha(int(34*self.champ));p.setBrush(col)
             p.drawPolygon(QPolygonF([QPointF(0,0),QPointF(R,-R*0.09),QPointF(R,R*0.09)]));p.rotate(360/16)
         p.restore()
     def _paint_vs(self,p,now):
@@ -751,7 +785,7 @@ class Arena(QWidget):
         colors=[s.color for s in sorted([s for s in self.sprites if s.side is not None],key=lambda s:s.side)]
         for i in range(2):
             x1,x2=(-68,-48) if i==0 else (48,68)
-            col=QColor(colors[min(i,len(colors)-1)]) if colors else QColor(GOLD)
+            col=QColor(colors[min(i,len(colors)-1)]) if colors else _g(GOLD)
             edge=QLinearGradient(x1,0,x2,0)
             low=QColor(col);low.setAlpha(0)
             high=QColor(col);high.setAlpha(125)
@@ -765,7 +799,7 @@ class Arena(QWidget):
         p.setBrush(QColor(0,0,0,95));p.drawRoundedRect(QRectF(-44,-24,88,56),20,20)
         p.drawPixmap(QPointF(-44,-28),self._vs_surface)
         p.setFont(_font(22,QFont.Weight.DemiBold))
-        p.setPen(GOLD)
+        p.setPen(_g(GOLD))
         self._text(p,QRectF(-44,-28,88,56),Qt.AlignmentFlag.AlignCenter,'VS')
         p.restore()
     def _paint_empty(self,p,now):
@@ -779,9 +813,9 @@ class Arena(QWidget):
         r=self.start_rect();h=self.start_hover
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(4,0,-1):
-            col=QColor(GOLD);col.setAlpha(int((0.3+0.4*h+0.15*math.sin(now*3))*14*i/4));p.setBrush(col)
+            col=_g(GOLD);col.setAlpha(int((0.3+0.4*h+0.15*math.sin(now*3))*14*i/4));p.setBrush(col)
             p.drawRoundedRect(r.adjusted(-i*4,-i*4,i*4,i*4),27+i*4,27+i*4)
-        g=QLinearGradient(r.topLeft(),r.topRight());g.setColorAt(0,GOLD);g.setColorAt(1,QColor(255,150,40))
+        g=QLinearGradient(r.topLeft(),r.topRight());g.setColorAt(0,_g(GOLD));g.setColorAt(1,_g(QColor(255,150,40)))
         p.setBrush(QBrush(g));p.drawRoundedRect(r,27,27)
         p.setFont(_font(17,QFont.Weight.Black));p.setPen(INK);self._text(p,r,Qt.AlignmentFlag.AlignCenter,'НАЧАТЬ ДУЭЛЬ')
 
@@ -833,10 +867,10 @@ class Leaders(QWidget):
         p.translate(14,4);W=self.width()-28
         p.setFont(_font(16,QFont.Weight.ExtraBold));p.setPen(QColor(240,240,246));p.drawText(QRectF(4,4,W,28),Qt.AlignmentFlag.AlignVCenter,'Лидеры по победам')
         ar=self._all_rect().translated(-14,-4)                       # «▶ Слушать топ»
-        p.setPen(Qt.PenStyle.NoPen);p.setBrush(GOLD if self.hover==-1 else QColor(255,255,255,26));p.drawRoundedRect(ar,14,14)
+        p.setPen(Qt.PenStyle.NoPen);p.setBrush(_g(GOLD) if self.hover==-1 else QColor(255,255,255,26));p.drawRoundedRect(ar,14,14)
         p.setFont(_font(12,QFont.Weight.Black));p.setPen(INK if self.hover==-1 else QColor(240,240,246))
         p.drawText(ar,Qt.AlignmentFlag.AlignCenter,'▶  Слушать топ')
-        medals=[GOLD,QColor(200,205,215),QColor(214,140,80)]
+        medals=[_g(GOLD),_g(QColor(200,205,215)),_g(QColor(214,140,80))]
         for i,(t,w) in enumerate(self.rows):
             y=40+i*34;val=self.shown.get(identity(t),0.0)
             if self.hover==i:
@@ -850,7 +884,7 @@ class Leaders(QWidget):
             p.drawText(QRectF(36,y,tw,30),Qt.AlignmentFlag.AlignVCenter,QFontMetrics(p.font()).elidedText(name,Qt.TextElideMode.ElideRight,int(tw)))
             bx=36+tw+14;bw=max(40,W-bx-60);br=QRectF(bx,y+10,bw,10)
             p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(255,255,255,18));p.drawRoundedRect(br,5,5)
-            g=QLinearGradient(br.topLeft(),br.topRight());g.setColorAt(0,QColor("#a78b24"));g.setColorAt(1,GOLD)
+            g=QLinearGradient(br.topLeft(),br.topRight());g.setColorAt(0,_g("#a78b24"));g.setColorAt(1,_g(GOLD))
             p.setBrush(QBrush(g));p.drawRoundedRect(QRectF(bx,y+10,max(10,bw*val),10),5,5)
             p.setFont(_font(13,QFont.Weight.Black));p.setPen(QColor(240,240,246))
             p.drawText(QRectF(bx+bw+8,y,50,30),Qt.AlignmentFlag.AlignVCenter,str(w))

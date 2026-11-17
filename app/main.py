@@ -481,7 +481,7 @@ class MainWindow(QMainWindow):
         settings_store.load_into(self.settings, SETTINGS_FILE)
         try:                                             # своя настройка темы Echoes Music (цвета, шрифт, кнопки)
             import ya_skin
-            ya_skin.apply(self.settings.get("ya_skin"))
+            ya_skin.apply(ya_skin.for_settings(self.settings))   # вид Phantom — свой монохромный скин
             import yamusic_theme as _yt                      # своя картинка вместо ноты (Оформление)
             if self.settings.get("placeholder_img"):
                 _yt.set_placeholder(self.settings.get("placeholder_img"))

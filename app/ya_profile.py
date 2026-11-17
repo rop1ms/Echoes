@@ -119,6 +119,19 @@ class SegTabs(QWidget):
         p.end()
 
 
+def _phantom() -> bool:
+    try:
+        import ya_skin
+        return bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+PH_BTN = ("QPushButton{color:#f5f5f5;background:rgba(12,12,12,0.55);border:1px solid rgba(255,255,255,0.16);"
+          "border-radius:15px;padding:7px 16px;font-weight:600;}"
+          "QPushButton:hover{background:rgba(12,12,12,0.68);border-color:rgba(255,255,255,0.24);}")
+
+
 class ProfileHeader(QWidget):
     H = 230
 
@@ -154,6 +167,17 @@ class ProfileHeader(QWidget):
         self.btn.setObjectName("YaChip")
         self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
         lay.addWidget(self.btn, 0, Qt.AlignmentFlag.AlignBottom)
+        if _phantom():                                         # Phantom: Inter 650, кикер капсом, тёмное стекло кнопки
+            import ph_style as ph
+            self.kicker.setText("PROFILE")
+            self.kicker.setStyleSheet("font-size:10px;font-weight:600;letter-spacing:2px;"
+                                      "color:rgba(255,255,255,0.62);background:transparent;")
+            self.nick.setStyleSheet("font-size:46px;font-weight:700;background:transparent;")
+            self.sub.setStyleSheet("font-size:12px;font-weight:500;color:rgba(255,255,255,0.72);"
+                                   "background:transparent;")
+            self.btn.setObjectName("PhProfileBtn")
+            self.btn.setStyleSheet(PH_BTN)
+            lay.setContentsMargins(ph.px(36), ph.px(28), ph.px(36), ph.px(22))
 
     def set_profile(self, nick, status, avatar, sub, anim=""):
         self.anim_path = anim or ""                           # GIF — живая аватарка (ya_avanim)
@@ -176,6 +200,20 @@ class ProfileHeader(QWidget):
     def paintEvent(self, _):
         from echo_glass import liquid_surface
         from PyQt6.QtCore import QSize, QRectF
+        if _phantom():                                         # стеклянная карточка Phantom; оформление — поверх
+            import ph_style as ph
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            r = QRectF(12, 12, max(1, self.width() - 24), max(1, self.height() - 12))
+            ph.paint_surface(p, r, "card", float(ph.px(22)))
+            if self.deco:
+                import net_showcase
+                p.save()
+                p.setClipPath(ph.surface_path(r, float(ph.px(22))))
+                net_showcase.header_paint(self, p, r)
+                p.restore()
+            p.end()
+            return
         size = QSize(max(1, self.width() - 24), max(1, self.height() - 12))
         if self._surface is None or self._surface.size() != size:
             self._surface = liquid_surface(size)
@@ -229,7 +267,8 @@ class StatRow(QWidget):
 
 def _tile(caption, value):
     f = QFrame()
-    f.setStyleSheet("QFrame{background:#1b1b1b;border-radius:14px;}")
+    f.setStyleSheet("QFrame{background:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.065);"
+                    "border-radius:16px;}" if _phantom() else "QFrame{background:#1b1b1b;border-radius:14px;}")
     v = QVBoxLayout(f)
     v.setContentsMargins(18, 14, 18, 14)
     v.setSpacing(2)

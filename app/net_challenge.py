@@ -152,6 +152,14 @@ def card(net) -> QFrame:
     f.setStyleSheet("QFrame#ChalCard{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 rgba(255,157,0,0.28),"
                     "stop:1 rgba(255,59,59,0.10));border-radius:18px;border:1px solid rgba(255,190,80,0.25);}"
                     "QLabel{background:transparent;}")
+    try:
+        import ya_skin
+        phantom = bool(ya_skin.PHANTOM_ON)
+    except Exception:                                          # noqa: BLE001
+        phantom = False
+    if phantom:                                                # вид Phantom — стекло вместо оранжевой плашки
+        f.setStyleSheet("QFrame#ChalCard{background:rgba(255,255,255,0.045);border-radius:20px;"
+                        "border:1px solid rgba(255,255,255,0.065);}QLabel{background:transparent;}")
     v = QVBoxLayout(f)
     v.setContentsMargins(18, 14, 18, 14)
     v.setSpacing(8)
@@ -160,9 +168,10 @@ def card(net) -> QFrame:
     col.setSpacing(0)
     from i18n import tr
     k = QLabel(tr("ЧЕЛЛЕНДЖ НЕДЕЛИ") + "  ·  " + left_text())
-    k.setStyleSheet("color:#ffcf70;font-size:11px;font-weight:800;letter-spacing:1px;")
+    k.setStyleSheet("color:rgba(255,255,255,0.42);font-size:10px;font-weight:600;letter-spacing:2px;" if phantom else
+                    "color:#ffcf70;font-size:11px;font-weight:800;letter-spacing:1px;")
     t = QLabel(theme_for(week))
-    t.setStyleSheet("font-size:22px;font-weight:900;")
+    t.setStyleSheet("font-size:20px;font-weight:600;" if phantom else "font-size:22px;font-weight:900;")
     t.setWordWrap(True)
     col.addWidget(k)
     col.addWidget(t)
