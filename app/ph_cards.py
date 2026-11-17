@@ -564,6 +564,19 @@ class WidgetBody(QWidget):
 
     def _paint_clock(self, p: QPainter, r: QRectF):
         tm = time.localtime()
+        if r.width() < ph.px(190):                             # квадрат 1:1: кольцо по центру, время внутри
+            rad = max(ph.px(18), min(r.width(), r.height()) / 2 - ph.px(6))
+            c = r.center()
+            frac = (tm.tm_hour % 12 * 60 + tm.tm_min) / 720.0
+            p.setPen(QPen(ph.white(.12), 1.5))
+            p.drawEllipse(c, rad, rad)
+            p.setPen(QPen(ph.white(.86), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(QRectF(c.x() - rad, c.y() - rad, 2 * rad, 2 * rad), 90 * 16, int(-frac * 360 * 16))
+            p.setFont(ph.font(max(11, min(17, int(rad / ph.px(1) * .42))), 650, -.01, tnum=True))
+            p.setPen(ph.qcolor(ph.TEXT_PRIMARY))
+            p.drawText(QRectF(r.left(), c.y() - rad, r.width(), 2 * rad), Qt.AlignmentFlag.AlignCenter,
+                       time.strftime("%H:%M", tm))
+            return
         cx, cy = r.left() + ph.px(28), r.center().y() + ph.px(2)
         rad = ph.px(24)
         p.setPen(QPen(ph.white(.12), 1.5))

@@ -29,6 +29,7 @@ try {
 Clear-Host
 
 . (Join-Path $PSScriptRoot 'launcher.ps1')
+. (Join-Path $PSScriptRoot 'player.ps1')
 . (Join-Path $PSScriptRoot 'downloads.ps1')
 
 $APP_NAME    = 'ECHOES'
@@ -154,11 +155,7 @@ function Invoke-Native([string]$Exe, [string[]]$Arguments, [switch]$ShowPip) {
 }
 
 function Stop-Running {
-    try {
-        Get-Process -Name pythonw, python -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
-            ForEach-Object { Warn 'закрываю запущенный ECHOES…'; $_ | Stop-Process -Force; Start-Sleep 1 }
-    } catch {}
+    if ((Stop-EchoesRuntime $InstallDir) -gt 0) { Info 'закрываю запущенный ECHOES…' }
 }
 
 function New-Shortcut([string]$Path, [string]$Target, [string]$Arguments, [string]$WorkDir, [string]$Icon, [string]$Desc) {
@@ -370,7 +367,7 @@ if ((Test-Path (Join-Path $FF_DIR 'ffmpeg.exe')) -and (Test-Path (Join-Path $FF_
 # ── 7. ярлыки ─────────────────────────────────────────────────────────────
 Step 7 'Ярлыки и регистрация в Windows'
 $main = Join-Path $APP_DIR 'main.py'
-$ico  = Join-Path $APP_DIR 'icon.ico'
+$player = Install-EchoesPlayer $InstallDir
 $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $uninstArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'uninstall.ps1')`""
 # GUI launcher is optional for older distributions; keep the direct player shortcut too.
@@ -378,28 +375,28 @@ $launcherTarget = Join-Path $InstallDir 'ECHOES Launcher.exe'
 if ($launcherSource) {
     try {
         Install-EchoesLauncher $launcherSource $InstallDir
-        if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $ico 'ECHOES — запуск и обновления' }
+        if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $launcherTarget 'ECHOES — запуск и обновления' }
         if (-not $NoStartMenu) {
             $launcherMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES'
             New-Item -ItemType Directory -Path $launcherMenu -Force | Out-Null
-            New-Shortcut (Join-Path $launcherMenu 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $ico 'ECHOES — запуск и обновления'
+            New-Shortcut (Join-Path $launcherMenu 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $launcherTarget 'ECHOES — запуск и обновления'
         }
     } catch { Warn "лаунчер не скопирован: $($_.Exception.Message)" }
 }
 if (-not $NoDesktop) { try {
     $desk = [Environment]::GetFolderPath('Desktop')
-    New-Shortcut (Join-Path $desk 'ECHOES.lnk') $PYW "`"$main`"" $APP_DIR $ico 'ECHOES — музыкальный плеер'
+    New-Shortcut (Join-Path $desk 'ECHOES.lnk') $player "`"$main`"" $APP_DIR $player 'ECHOES — музыкальный плеер'
     Ok 'ярлык на рабочем столе'
 } catch { Warn "ярлык на рабочем столе не создан: $($_.Exception.Message)" } }
 if ($Autostart) { try {
-    New-Shortcut (Join-Path ([Environment]::GetFolderPath('Startup')) 'ECHOES.lnk') $PYW "`"$main`"" $APP_DIR $ico 'ECHOES — музыкальный плеер'
+    New-Shortcut (Join-Path ([Environment]::GetFolderPath('Startup')) 'ECHOES.lnk') $player "`"$main`"" $APP_DIR $player 'ECHOES — музыкальный плеер'
     Ok 'запуск вместе с Windows'
 } catch { Warn "автозапуск не настроен: $($_.Exception.Message)" } }
 if (-not $NoStartMenu) { try {
     $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES'
     New-Item -ItemType Directory -Path $menu -Force | Out-Null
-    New-Shortcut (Join-Path $menu 'ECHOES.lnk') $PYW "`"$main`"" $APP_DIR $ico 'ECHOES — музыкальный плеер'
-    New-Shortcut (Join-Path $menu 'Удалить ECHOES.lnk') $psExe $uninstArgs $InstallDir $ico 'Удалить ECHOES'
+    New-Shortcut (Join-Path $menu 'ECHOES.lnk') $player "`"$main`"" $APP_DIR $player 'ECHOES — музыкальный плеер'
+    New-Shortcut (Join-Path $menu 'Удалить ECHOES.lnk') $psExe $uninstArgs $InstallDir $player 'Удалить ECHOES'
     Ok 'меню «Пуск»'
 } catch { Warn "ярлык в меню «Пуск» не создан: $($_.Exception.Message)" } }
 try {
@@ -409,7 +406,7 @@ try {
     try { $size = [int]((Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1KB) } catch {}
     $props = @{
         DisplayName = 'ECHOES'; DisplayVersion = $APP_VERSION; Publisher = 'ECHOES';
-        DisplayIcon = $ico; InstallLocation = $InstallDir;
+        DisplayIcon = "$player,0"; InstallLocation = $InstallDir;
         UninstallString = "`"$psExe`" $uninstArgs"; NoModify = 1; NoRepair = 1; EstimatedSize = $size
     }
     foreach ($k in $props.Keys) {
@@ -437,6 +434,6 @@ Write-Host '   Папку ECHOES_Setup теперь можно удалить.' 
 Write-Host ''
 $go = if ($NoLaunch) { 'n' } elseif ($Auto) { '' } else { Read-Host '   Запустить ECHOES сейчас? [Enter — да / n — нет]' }
 if ($go -notmatch '^(n|н|no|нет)$') {
-    Start-Process -FilePath $PYW -ArgumentList "`"$main`"" -WorkingDirectory $APP_DIR
+    Start-Process -FilePath $player -ArgumentList "`"$main`"" -WorkingDirectory $APP_DIR
 }
 exit 0

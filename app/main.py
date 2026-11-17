@@ -515,6 +515,10 @@ class MainWindow(QMainWindow):
 
         self.current_index = -1
         self.queue_context = "library"
+        self.user_queue = []                         # «дальше по очереди» — играет раньше основного порядка
+        self._queued_now = False                     # сейчас звучит трек из пользовательской очереди
+        self._saved_ctx = None                       # откуда продолжить, когда очередь закончится
+        self._qguard = False
         # Spotify-style страница плейлиста: открыта ли сейчас и какая
         self._playlist_detail_open = False
         self._playlist_detail_name = None
@@ -667,10 +671,6 @@ class MainWindow(QMainWindow):
         self.engine.gain_provider = self._loud_gain
         QTimer.singleShot(12000, self._loud_scan)    # измерить громкость библиотеки в фоне
         QTimer.singleShot(25000, self._warm_studio)  # студией пользуются — её модули подгрузить заранее
-        self.user_queue = []                         # «дальше по очереди» — играет раньше основного порядка
-        self._queued_now = False                     # сейчас звучит трек из пользовательской очереди
-        self._saved_ctx = None                       # откуда продолжить, когда очередь закончится
-        self._qguard = False
         for w in (self.avatar_lbl, self.nick_lbl, self.status_lbl):
             w.setCursor(Qt.CursorShape.PointingHandCursor)
             w.setToolTip("Открыть профиль и статистику")
@@ -8860,7 +8860,7 @@ if __name__=="__main__":
     _strace.mark("before_window")
     win=_strace.build(MainWindow)
     _strace.mark("window_built")
-    try:                  # заставка: солнце с вылетающими лучами и надпись ECHOES (Настройки → Оформление)
+    try:                  # заставка: линия и надпись ECHOES, потом сборка сцены (Настройки → Оформление)
         import intro_anim
         if intro_anim.enabled(win.settings) and not _native_intro:
             intro_anim.play(win)                       # без DLL — прежняя заставка поверх окна
@@ -8894,7 +8894,7 @@ if __name__=="__main__":
         except Exception as _e:                        # noqa: BLE001
             print("[preload]", _e)
         finally:
-            intro_anim.ready()
+            intro_anim.ready(win)                      # растворяется — сцена Phantom собирается (ph_intro)
     try:                  # сторож плавности: долго меньше ~15 к/с — сам включит лёгкий режим
         import sysprobe
         sysprobe.install_guard(win)

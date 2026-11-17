@@ -162,7 +162,10 @@ class _ImageJob(QObject):
                     p.end()
             except Exception:                                  # noqa: BLE001 — без картинки фон просто тёмный
                 img = QImage()
-            self.done.emit(token, img)
+            try:
+                self.done.emit(token, img)
+            except RuntimeError:                              # фон уже закрыт
+                pass
         threading.Thread(target=work, name="ph-backdrop", daemon=True).start()
 
 
@@ -181,10 +184,10 @@ class PhBackground(QWidget):
         self._image = QImage()                   # размытая картинка (¼ размера, с запасом 16 %)
         self._image_for: tuple | None = None
         self._token = 0
+        self._image_loading = False
         self._job = _ImageJob(self)
         self._job.done.connect(self._on_image)
         self._static = QPixmap()                 # база + картинка + затемнение + зерно + виньетка
-        self._frame = QPixmap()                  # static + вспышки и дым — то, что рисует paintEvent
         self._atmo_img = QImage()
         self._t0 = time.perf_counter()
         self._time_offset = random.Random(7).random() * 600   # не с нуля: пятна сразу в «середине» пути
@@ -193,7 +196,7 @@ class PhBackground(QWidget):
         self._rebuild = QTimer(self)
         self._rebuild.setSingleShot(True)
         self._rebuild.setInterval(REBUILD_DELAY_MS)
-        self._rebuild.timeout.connect(self._rebuild_static)
+        self._rebuild.timeout.connect(self._resize_settled)
         self._atmo_timer = FrameTimer(self)
         self._atmo_timer.setInterval(ATMO_MS)
         self._atmo_timer.timeout.connect(self._atmo_tick)
@@ -217,6 +220,8 @@ class PhBackground(QWidget):
         if animated is not None:
             self._animated = bool(animated)
         if changed:
+            self._image_for = None
+            self._token += 1
             self._request_image()
             self._rebuild_static()
         self._sync_timers()
@@ -226,7 +231,7 @@ class PhBackground(QWidget):
         self._occluders = [QRect(r) for r in rects]
 
     def animating(self) -> bool:
-        return self._animated and not ph.motion_reduced() and self.isVisible() and \
+        return self._animated and ph.setting("effects") and not ph.motion_reduced() and self.isVisible() and \
             not (self.window() and self.window().isMinimized())
 
     # ── жизненный цикл ── #
@@ -248,16 +253,22 @@ class PhBackground(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._rebuild.start()
+
+    def _resize_settled(self):
+        if not self.isVisible():
+            return
         self._request_image()
+        self._rebuild_static()
 
     def release(self):
         """Отпустить картинки (окно надолго скрыто): при показе всё соберётся заново."""
         self._atmo_timer.stop()
         self._dust_timer.stop()
+        self._rebuild.stop()
         self._static = QPixmap()
-        self._frame = QPixmap()
         self._image = QImage()
         self._image_for = None
+        self._token += 1
         self._atmo_img = QImage()
 
     def _sync_timers(self):
@@ -270,10 +281,13 @@ class PhBackground(QWidget):
         if not on and self._dust_rects:
             rects, self._dust_rects = self._dust_rects, []
             self._update_rects(rects)
+        if not ph.setting("effects") and not self._atmo_img.isNull():
+            self._atmo_img = QImage()
+            self.update()
 
     # ── картинка ── #
     def _request_image(self):
-        if not self.isVisible() or self.width() < 8 or self.height() < 8:
+        if self._image_loading or not self.isVisible() or self.width() < 8 or self.height() < 8:
             return
         p = phantom_params(self._intensity, self._brightness)
         want = (str(self._image_src) if not isinstance(self._image_src, QImage) else id(self._image_src),
@@ -282,14 +296,18 @@ class PhBackground(QWidget):
             return
         self._image_for = want
         self._token += 1
+        self._image_loading = True
         self._job.run(self._token, self._image_src, self.size(), p["image_blur"], p["image_brightness"])
 
     def _on_image(self, token: int, img: QImage):
-        if token != self._token:
-            return
-        self._image = img
-        ph.set_tint(image_tint(img))
-        self._rebuild_static()
+        self._image_loading = False
+        if token == self._token:
+            self._image = img
+            ph.set_tint(image_tint(img))
+            if self.isVisible() and not self._rebuild.isActive():
+                self._rebuild_static()
+        if not self._rebuild.isActive():
+            self._request_image()
 
     # ── неподвижный слой ── #
     def _rebuild_static(self):
@@ -319,7 +337,7 @@ class PhBackground(QWidget):
         finally:
             p.end()
         self._static = pm
-        self._compose()
+        self._refresh_atmosphere()
 
     @staticmethod
     def _paint_base(p: QPainter, w: float, h: float, bright: float):
@@ -413,22 +431,13 @@ class PhBackground(QWidget):
                 p.drawImage(QRectF(ux + hx - r, uy + hy - r, 2 * r, 2 * r), sp["smoke"])
         p.end()
 
-    def _compose(self):
-        """frame = неподвижный слой + вспышки и дым (растянутые из 1/6)."""
-        if self._static.isNull():
-            return
-        if not ph.setting("effects"):
-            self._frame = self._static
-            self.update()
-            return
-        self._render_atmo()
-        pm = QPixmap(self._static)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-        p.drawImage(QRectF(0, 0, self.width(), self.height()), self._atmo_img)
-        p.end()
-        self._frame = pm
+    def _refresh_atmosphere(self):
+        # Blend the small atmosphere on the widget's backing store, using Qt's
+        # dirty region. No second full-screen pixmap is needed.
+        if ph.setting("effects") and self._intensity > .001:
+            self._render_atmo()
+        else:
+            self._atmo_img = QImage()
         self.update()
 
     def _atmo_tick(self):
@@ -436,7 +445,7 @@ class PhBackground(QWidget):
             self._sync_timers()
             return
         self.stats["atmo_frames"] += 1
-        self._compose()
+        self._refresh_atmosphere()
 
     # ── пылинки ── #
     def _dust_positions(self):
@@ -487,18 +496,22 @@ class PhBackground(QWidget):
             p.end()
 
     def _paint(self, p: QPainter, e):
-        src = self._frame if not self._frame.isNull() else self._static
+        src = self._static
         if src.isNull():
             p.fillRect(self.rect(), QColor(ph.BG_BASE))
             return
-        sw = src.width() / src.devicePixelRatio()
-        if abs(sw - self.width()) > 1:                         # окно тянут — старый кадр растянуть
+        size = src.deviceIndependentSize()
+        if abs(size.width() - self.width()) > 1 or abs(size.height() - self.height()) > 1:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawPixmap(QRectF(self.rect()), src, QRectF(src.rect()))
         else:
             # Qt уже обрезал рисование по обновляемой области (пылинки — крошечные прямоугольники):
             # копируются только они, а не весь кадр
             p.drawPixmap(0, 0, src)
+        if not self._atmo_img.isNull():
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+            p.drawImage(QRectF(self.rect()), self._atmo_img)
         if self._dust_timer.isActive():
             img = _sprites()["dustimg"]
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -525,28 +538,33 @@ def frozen_blur(widget: QWidget, blur: float = 6.0, dim: float = .55, saturation
     layers — нарисовать только эти виджеты (по порядку, в координатах widget), а не всё окно: так в снимок
     не попадает сама панель, если она уже на экране."""
     import blur_fx
+    q = .5
     if layers:
-        dpr = widget.devicePixelRatioF() or 1.0
-        shot = QPixmap(int(widget.width() * dpr), int(widget.height() * dpr))
-        shot.setDevicePixelRatio(dpr)
-        shot.fill(QColor(ph.BG_BASE))
-        p = QPainter(shot)
-        for w in layers:
-            if w is None:
-                continue
-            off = w.mapTo(widget, w.rect().topLeft()) if w is not widget else w.rect().topLeft()
-            w.render(p, off, QRegion(), QWidget.RenderFlag.DrawChildren)
-        p.end()
+        dpr = widget.devicePixelRatioF()
+        w, h = int(widget.width() * dpr), int(widget.height() * dpr)
+        if not w or not h:
+            return QPixmap()
+        small = QImage(max(4, int(w * q)), max(4, int(h * q)), _ARGB)
+        small.fill(QColor(ph.BG_BASE))
+        p = QPainter(small)
+        try:
+            p.scale(small.width() / widget.width(), small.height() / widget.height())
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            for layer in layers:
+                if layer is not None:
+                    off = layer.mapTo(widget, layer.rect().topLeft())
+                    layer.render(p, off, QRegion(), QWidget.RenderFlag.DrawChildren)
+        finally:
+            p.end()
     else:
         shot = widget.grab()
-    img = shot.toImage()
-    if img.isNull():
-        return shot
-    dpr = shot.devicePixelRatio()
-    w, h = img.width(), img.height()
-    q = .5
-    small = img.scaled(max(4, int(w * q)), max(4, int(h * q)), Qt.AspectRatioMode.IgnoreAspectRatio,
-                       Qt.TransformationMode.SmoothTransformation)
+        if shot.isNull():
+            return shot
+        dpr = shot.devicePixelRatio()
+        w, h = shot.width(), shot.height()
+        small = shot.toImage().scaled(max(4, int(w * q)), max(4, int(h * q)),
+                                      Qt.AspectRatioMode.IgnoreAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation)
     small = blur_fx.blur_image(small, max(.5, blur * dpr * q),
                                post=(lambda im: blur_fx.saturate(im, saturation)) if abs(saturation - 1) > .02
                                else None)

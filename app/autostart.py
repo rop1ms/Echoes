@@ -12,6 +12,9 @@ MAIN = ROOT / "main.py"
 
 def _python_exe() -> str:
     if platform.system() == "Windows":
+        player = ROOT.parent / "python" / "Echoes.exe"
+        if player.is_file():
+            return str(player)
         pw = Path(sys.executable).with_name("pythonw.exe")
         if pw.exists():
             return str(pw)
@@ -30,7 +33,7 @@ def install_windows():
     vbs.write_text(
         'Set sh = CreateObject("WScript.Shell")\n'
         f'sh.Run """{py}"" ""{MAIN}""", 0, False\n',
-        encoding="utf-8",
+        encoding="utf-16",
     )
     print(f"[+] Автозапуск добавлен: {vbs}")
 

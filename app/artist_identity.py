@@ -27,6 +27,7 @@ PROTECTED = ('AC/DC', 'Tyler, The Creator', 'Earth, Wind & Fire', 'Simon & Garfu
              'Emerson, Lake & Palmer', 'Sam & Dave', 'Brooks & Dunn', 'Big & Rich', 'Dan + Shay',
              'Macklemore & Ryan Lewis', 'Daryl Hall & John Oates', 'Lil Nas X',
              'Мумий Тролль', 'Сплин', 'Кино')
+_PROTECTED = tuple(re.compile(re.escape(name), re.I) for name in PROTECTED)
 
 _TOPIC = re.compile(r'\s*[-–—]\s*topic\s*$', re.I)
 _VEVO = re.compile(r'(?:\s*vevo|\s*\(official\)|\s+official)\s*$', re.I)
@@ -104,11 +105,12 @@ def _split(value):
     if key(s) in _LEARNED_KEEP:
         return (' '.join(s.split()),)
     saved = {}
-    for i, name in enumerate(PROTECTED):
-        if re.search(re.escape(name), s, re.I):
+    for i, name in enumerate(_PROTECTED):
+        match = name.search(s)
+        if match is not None:
             token = f'PROTECTEDARTIST{i}TOKEN'
-            saved[token] = re.search(re.escape(name), s, re.I).group(0)
-            s = re.sub(re.escape(name), token, s, flags=re.I)
+            saved[token] = match.group(0)
+            s = name.sub(token, s)
     pieces = _STRONG.split(s)
     parts, seps = _rejoin_the(pieces[0::2], pieces[1::2])
     weak = []
@@ -269,8 +271,11 @@ class ArtistIndex:
                     if a != bk and find(a) != find(bk) and same_artist(a, bk):
                         parent[find(bk)] = find(a)
         clusters = defaultdict(Counter)
+        members = defaultdict(list)
         for k, cnt in names.items():
-            clusters[find(k)].update(cnt)
+            root = find(k)
+            clusters[root].update(cnt)
+            members[root].append(k)
         # «главный» ключ кластера — у самого частого написания
         self.alias = {}
         self.names = {}
@@ -278,9 +283,7 @@ class ArtistIndex:
             best = self._best(cnt)
             rep = key(best)
             self.names[rep] = cnt
-            for k in names:
-                if find(k) == root:
-                    self.alias[k] = rep
+            self.alias.update(dict.fromkeys(members[root], rep))
         _ALIAS.clear()
         _ALIAS.update(self.alias)
         self.tracks = defaultdict(list)

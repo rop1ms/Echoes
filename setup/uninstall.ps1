@@ -28,8 +28,10 @@ if (Test-Path $DataDir) {
 }
 
 # закрыть запущенный плеер
-Get-Process -Name pythonw, python -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
+$runtime = Join-Path $InstallDir 'python'
+$targets = @('Echoes.exe', 'pythonw.exe', 'python.exe') | ForEach-Object { Join-Path $runtime $_ }
+Get-Process -Name Echoes, pythonw, python -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -in $targets } |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 800
 
@@ -37,6 +39,7 @@ Remove-Item (Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES.lnk') -
 Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES Launcher.lnk') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) 'NeonPlayer.vbs') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Startup')) 'ECHOES.lnk') -Force -ErrorAction SilentlyContinue
 Remove-Item 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ECHOES' -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item 'HKCU:\Software\Classes\AppUserModelId\echoes.player' -Recurse -Force -ErrorAction SilentlyContinue
 if (-not $keepData) { Remove-Item $DataDir -Recurse -Force -ErrorAction SilentlyContinue }

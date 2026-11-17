@@ -11,15 +11,16 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 _SPLIT = re.compile(r"[\s\-–—·,;:|/&+]+")
 _RU = "йцукенгшщзхъфывапролджэячсмитьбю"
 _EN = "qwertyuiop[]asdfghjkl;'zxcvbnm,."
 _SWAP = str.maketrans(_RU + _EN, _EN + _RU)
-_TR = {"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh", "з": "z", "и": "i", "й": "y",
+_TR = str.maketrans({"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ж": "zh", "з": "z", "и": "i", "й": "y",
        "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
        "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "", "э": "e",
-       "ю": "yu", "я": "ya", "і": "i", "ї": "yi", "є": "ye", "ґ": "g"}
+       "ю": "yu", "я": "ya", "і": "i", "ї": "yi", "є": "ye", "ґ": "g"})
 _CYR = re.compile("[а-яёіїєґ]")
 
 
@@ -28,7 +29,7 @@ def norm(s) -> str:
 
 
 def translit(s: str) -> str:
-    return "".join(_TR.get(c, c) for c in s)
+    return s.translate(_TR)
 
 
 def tokens(query: str) -> list[str]:
@@ -55,13 +56,29 @@ def hay_of(*fields) -> str:
     return h + " " + translit(h) if _CYR.search(h) else h
 
 
+@lru_cache(maxsize=64)
+def _query_variants(query: str) -> tuple[tuple[str, ...], ...]:
+    # One search compares the same query with thousands of tracks.
+    return tuple(variants(word) for word in tokens(query))
+
+
 def matches(query, *fields) -> bool:
     """Все слова запроса есть в склейке полей (title, artist, album...)."""
-    toks = tokens(query) if isinstance(query, str) else list(query)
-    if not toks:
+    if isinstance(query, str):
+        plan = (_query_variants(query) if len(query) <= 512 else
+                tuple(variants(word) for word in tokens(query)))
+    else:
+        plan = tuple(variants(word) for word in query)
+    if not plan:
         return True
     hay = hay_of(*fields)
-    return all(any(v in hay for v in variants(w)) for w in toks)
+    for alternatives in plan:
+        for value in alternatives:
+            if value in hay:
+                break
+        else:
+            return False
+    return True
 
 
 def track_matches(query, t: dict) -> bool:

@@ -3527,6 +3527,9 @@ class YaShell(QWidget):
                 self.show_page("albums")
         elif cur in ("collection", "albums", "search"):
             self._rebuild(cur)
+        ph_ = self.__dict__.get("ph")
+        if ph_ is not None:
+            ph_.refresh_library()
         TrackListView.refresh_visible()
 
     def new_playlist(self):
@@ -7233,7 +7236,7 @@ class YaShell(QWidget):
         col.setSpacing(2)
         t = QLabel("Анимация при запуске")
         t.setStyleSheet("font-size:14px;font-weight:700;background:transparent;")
-        d = QLabel("Солнце выпускает лучи, из темноты выходит надпись ECHOES. Клик — пропустить.")
+        d = QLabel("Из линии поднимается надпись ECHOES, потом плеер собирается по деталям. Клик — пропустить.")
         d.setObjectName("YaSub")
         d.setWordWrap(True)
         col.addWidget(t)

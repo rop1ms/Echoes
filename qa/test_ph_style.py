@@ -136,7 +136,8 @@ check(bg._dust_rects and max(r.width() for r in bg._dust_rects) <= 12, "пере
 t0 = time.perf_counter()
 n = 10
 for _ in range(n):
-    bg._compose()
+    bg._refresh_atmosphere()
+    app.processEvents()
 t_compose = (time.perf_counter() - t0) / n
 t0 = time.perf_counter()
 for _ in range(60):
@@ -171,6 +172,13 @@ t0 = time.perf_counter()
 fb = ph_backdrop.frozen_blur(root)
 t_fb = time.perf_counter() - t0
 check(not fb.isNull() and fb.width() == root.grab().width(), f"снимок с размытием готов ({t_fb * 1000:.0f} мс)")
+layer = QWidget(root)
+layer.setStyleSheet("background:#c80000")
+layer.setGeometry(24, 36, 66, 70)
+layer.show()
+snap = ph_backdrop.frozen_blur(root, blur=2.0, dim=0, layers=[layer])
+inner = snap.toImage().pixelColor(round(56 * snap.devicePixelRatio()), round(70 * snap.devicePixelRatio()))
+check(inner.red() > 150 and inner.green() < 20, "снимок рисует слой со смещением и уменьшением")
 
 print(f"\n{'FAILED: ' + str(len(fails)) if fails else 'ALL OK'}")
 sys.exit(1 if fails else 0)

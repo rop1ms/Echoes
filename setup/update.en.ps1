@@ -12,7 +12,10 @@ try { $Host.UI.RawUI.WindowTitle = 'ECHOES — update' } catch {}
 try { $Host.UI.RawUI.BackgroundColor = 'Black'; $Host.UI.RawUI.ForegroundColor = 'Gray' } catch {}
 Clear-Host
 
-$SRC_APP = Join-Path (Split-Path -Parent $PSScriptRoot) 'app'
+$SRC_ROOT = Split-Path -Parent $PSScriptRoot
+$SRC_APP = Join-Path $SRC_ROOT 'app'
+. (Join-Path $PSScriptRoot 'launcher.ps1')
+. (Join-Path $PSScriptRoot 'player.ps1')
 
 function Ok([string]$t)   { Write-Host "      √ $t" -ForegroundColor Green }
 function Info([string]$t) { Write-Host "      · $t" -ForegroundColor DarkGray }
@@ -53,7 +56,7 @@ try {
     foreach ($lnk in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES.lnk'),
                        (Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES\ECHOES.lnk'))) {
         if (Test-Path $lnk) {
-            $t = $ws.CreateShortcut($lnk).TargetPath            # ...\ECHOES\python\pythonw.exe
+            $t = $ws.CreateShortcut($lnk).TargetPath            # ...\ECHOES\python\Echoes.exe (or legacy pythonw.exe)
             if ($t) { $cands.Add((Split-Path -Parent (Split-Path -Parent $t))) }
         }
     }
@@ -71,6 +74,7 @@ if (-not $InstallDir) {
 $APP = Join-Path $InstallDir 'app'
 $PY  = Join-Path $InstallDir 'python\python.exe'
 Ok "found: $InstallDir"
+$launcherSource = Get-EchoesLauncher $SRC_ROOT
 
 $verFile = Join-Path $APP 'version.txt'
 $oldVer = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { 'old' }
@@ -80,18 +84,9 @@ Info "version: $oldVer  →  $newVer"
 
 # ── 2. close the player ─────────────────────────────────────────────────────
 Step 'I′m closing ECHOES, if it′s open'
-$killed = 0
-try {
-    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction Stop |
-        Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase)) -or
-                       ($_.CommandLine -and $_.CommandLine -like "*$APP*") } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $killed++ }
-} catch {
-    Get-Process -Name pythonw, python -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
-        ForEach-Object { $_ | Stop-Process -Force; $killed++ }
-}
-if ($killed) { Start-Sleep -Milliseconds 1200; Ok 'closed' } else { Ok 'was not launched' }
+$killed = Stop-EchoesRuntime $InstallDir -IncludeExternal
+if ($killed) { Ok 'closed' } else { Ok 'was not launched' }
+$player = Install-EchoesPlayer $InstallDir
 
 # ── 3. replace files ────────────────────────────────────────────────────
 Step 'Updating program files'
@@ -155,10 +150,17 @@ $pipCode = $LASTEXITCODE
 $ErrorActionPreference = $old
 if ($pipCode -eq 0) { Ok 'done' } else { Warn 'some libraries have not been updated (no internet?) - the player is still updated' }
 
+if ($launcherSource) { Install-EchoesLauncher $launcherSource $InstallDir }
+try { Update-EchoesWindowsShortcuts $InstallDir }
+catch { Warn "Could not refresh shortcuts: $($_.Exception.Message)" }
+
 # ── done ───────────────────────────────────────────────────────────────
 try {
     $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ECHOES'
-    if (Test-Path $key) { Set-ItemProperty -Path $key -Name DisplayVersion -Value $newVer -ErrorAction SilentlyContinue }
+    if ((Test-Path $key) -and (Get-ItemProperty -Path $key).InstallLocation -eq $InstallDir) {
+        Set-ItemProperty -Path $key -Name DisplayVersion -Value $newVer -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $key -Name DisplayIcon -Value "$player,0" -ErrorAction SilentlyContinue
+    }
 } catch {}
 Write-Host ''
 Write-Host '  ╔══════════════════════════════════════════════╗' -ForegroundColor Green
@@ -167,6 +169,6 @@ Write-Host '  ╚═════════════════════
 Write-Host ''
 $go = Read-Host '   Start ECHOES? [Enter — yes / n — no]'
 if ($go -notmatch '^(n|n|no|no)$') {
-    Start-Process -FilePath (Join-Path $InstallDir 'python\pythonw.exe') -ArgumentList "`"$(Join-Path $APP 'main.py')`"" -WorkingDirectory $APP
+    Start-Process -FilePath $player -ArgumentList "`"$(Join-Path $APP 'main.py')`"" -WorkingDirectory $APP
 }
 exit 0

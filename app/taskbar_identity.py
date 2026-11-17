@@ -1,7 +1,7 @@
 # taskbar_identity.py
 """
-«Личность» окна для панели задач Windows: если закрепить запущенный ECHOES, ярлык получает
-правильную команду запуска, значок и имя (а не значок pythonw.exe без параметров).
+Идентичность окна на панели задач Windows: закреплённый ярлык получает
+команду запуска, значок и имя Echoes.
 
 Окну выставляются свойства оболочки (IPropertyStore):
     System.AppUserModel.ID, RelaunchCommand, RelaunchDisplayNameResource, RelaunchIconResource.
@@ -79,11 +79,16 @@ def set_window_identity(hwnd: int, command: str, icon_path: str, display_name: s
 
 
 def apply(window, app_dir: Path) -> bool:
-    """Для главного окна: команда запуска = pythonw.exe + main.py, значок = icon.ico."""
+    """Use the installed player image and its resources for pinned relaunches."""
+    app_dir = Path(app_dir)
+    player = app_dir.parent / "python" / "Echoes.exe"
+    if player.is_file():
+        return set_window_identity(int(window.winId()), f'"{player}" "{app_dir / "main.py"}"',
+                                   f"{player},0", f"@{player},-101")
     exe = Path(sys.executable)
     pyw = exe.with_name("pythonw.exe")
     exe = pyw if pyw.exists() else exe
-    main_py = Path(app_dir) / "main.py"
-    icon = Path(app_dir) / "icon.ico"
+    main_py = app_dir / "main.py"
+    icon = app_dir / "icon.ico"
     cmd = f'"{exe}" "{main_py}"'
     return set_window_identity(int(window.winId()), cmd, f"{icon},0" if icon.exists() else "", "ECHOES")

@@ -119,7 +119,10 @@ def launch(root):
         raise ValueError("ECHOES не найден в этой папке.")
     if running(root):
         raise ValueError("ECHOES уже запущен — его окно или значок в трее.")
-    return subprocess.Popen([str(root / "python/pythonw.exe"), str(root / "app/main.py")], cwd=root / "app")
+    player = root / "python/Echoes.exe"
+    if not player.is_file():
+        player = root / "python/pythonw.exe"
+    return subprocess.Popen([str(player), str(root / "app/main.py")], cwd=root / "app")
 
 
 def _download_archive(url, zpath, progress, cancel):

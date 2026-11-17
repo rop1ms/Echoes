@@ -23,6 +23,8 @@ from PyQt6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QImage, QLinea
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QDialog, QFileDialog, QGridLayout, QHBoxLayout,
                              QLabel, QPushButton, QScrollArea, QSlider, QVBoxLayout, QWidget)
 
+from raster_budget import ByteLRU
+
 MAX_PNG = 16000                      # base64 своей рамки
 INSET = 0.11                         # фото внутри рамки уменьшается на столько с каждой стороны
 
@@ -50,7 +52,7 @@ SEASON_FRAMES = {"halloween": ("Хеллоуин", "15 октября — 5 но
                  "summer": ("Лето", "июнь — август")}
 
 RESOLVER = None                      # key (onion/npub) → (spec, ach, role) — ставит Echoes.NET
-_CACHE: dict = {}
+_CACHE = ByteLRU(4 * 2**20)
 
 
 def png_b64(img: QImage, limit=MAX_PNG) -> str:
@@ -491,7 +493,8 @@ def frame_pixmap(spec: dict, size: int) -> QPixmap | None:
     if not spec:
         return None
     fid = spec.get("id", "")
-    key = (fid, spec.get("role", ""), (spec.get("png") or "")[:64], len(spec.get("png") or ""), size)
+    png = spec.get("png") or ""
+    key = (fid, spec.get("role", ""), png, size)
     hit = _CACHE.get(key)
     if hit is not None:
         return hit
@@ -505,7 +508,7 @@ def frame_pixmap(spec: dict, size: int) -> QPixmap | None:
     if fid == "custom":
         img = QImage()
         try:
-            img.loadFromData(base64.b64decode(spec.get("png") or ""), "PNG")
+            img.loadFromData(base64.b64decode(png), "PNG")
         except ValueError:
             pass
         if img.isNull():
@@ -525,9 +528,7 @@ def frame_pixmap(spec: dict, size: int) -> QPixmap | None:
         p.end()
         return None
     p.end()
-    if len(_CACHE) > 300:
-        _CACHE.clear()
-    _CACHE[key] = pm
+    _CACHE.put(key, pm, pm.width() * pm.height() * 4 + len(png))
     return pm
 
 

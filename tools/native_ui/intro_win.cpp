@@ -4,10 +4,10 @@
 // поток создаёт своё окно Win32 (без рамки, поверх окна плеера), рисует кадры QPainter'ом в картинку
 // (DIB) и выводит её в ритме экрана (DwmFlush) — ни поток интерфейса, ни GIL Python ей не нужны. Поэтому
 // пока идёт заставка, плеер спокойно загружает всё заранее (страницы, первые кадры, GL), а заставка не
-// дёргается. Сюжет: из тьмы загорается солнце, лучи по одному вылетают с искрами, вспышка, буква за
-// буквой выходит ECHOES с бликом; дальше, пока плеер не готов, солнце медленно вращается, сияние дышит,
-// под надписью бежит полоска загрузки. Готов (eui_intro_ready) и сюжет досмотрен — заставка растворяется
-// с лёгким «наездом». Клик — не ждать конца сюжета.
+// дёргается. Сюжет монохромный, без акцентного цвета (тот же, что intro_anim.paint): из центра вырастает
+// тонкая белая линия, из-за неё буква за буквой поднимается ECHOES, по надписи пробегает блик; пока плеер
+// не готов, по линии бежит блик загрузки. Готов (eui_intro_ready) и сюжет досмотрен — заставка
+// растворяется, а плеер в этот миг собирает сцену (ph_intro; момент — eui_intro_fading). Клик — не ждать.
 #include <windows.h>
 #include <dwmapi.h>
 #include <QtGui/QColor>
@@ -33,10 +33,8 @@
 
 namespace {
 
-constexpr int RAYS = 16;
-constexpr double T_RAYS = 0.30, RAY_STEP = 0.055, RAY_GROW = 0.36;
-constexpr double T_FLASH = T_RAYS + RAYS * RAY_STEP + 0.16;
-constexpr double T_TEXT = 1.15, LETTER_STEP = 0.075, T_SWEEP = 1.80, T_SEQ = 2.6, FADE = 0.6;
+constexpr double T_LINE = 0.0, LINE_GROW = 0.5, T_TEXT = 0.22, LETTER_STEP = 0.06, LETTER_RISE = 0.5;
+constexpr double T_SWEEP = 0.95, SWEEP = 0.5, T_SEQ = 1.45, FADE = 0.45, LINE_W = 260.0;
 
 double clamp01(double x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 double out_cubic(double x) { x = clamp01(x); return 1 - (1 - x) * (1 - x) * (1 - x); }
@@ -45,7 +43,7 @@ double in_out(double x) { x = clamp01(x); return x < 0.5 ? 4 * x * x * x : 1 - s
 
 struct Intro {
     std::thread th;
-    std::atomic<bool> alive{false}, ready{false}, skip{false};
+    std::atomic<bool> alive{false}, ready{false}, skip{false}, fading{false};
     std::atomic<HWND> owner{nullptr};
     std::atomic<int> frames{0};
     std::mutex mu;
@@ -74,146 +72,80 @@ Intro *g_intro = nullptr;
 void Intro::draw(QPainter &p, double W, double H, double t, double out) {
     p.fillRect(QRectF(0, 0, W, H), Qt::black);
     const double alpha = 1.0 - out;
+    if (alpha <= 0.01) return;
     p.setOpacity(alpha);
-    const double cx = W / 2, cy = H / 2 - 40;
-    const double zoom = 1.0 + 0.10 * out;
-    p.translate(cx, cy + 40);
-    p.scale(zoom, zoom);
-    p.translate(-cx, -(cy + 40));
-    const bool hold = t > T_SEQ;
-    const double breathe = hold ? 0.5 + 0.5 * std::sin((t - T_SEQ) * 2.4) : 0.0;
-    // сияние
-    {
-        double k = out_cubic(t / 1.0);
-        double pulse = std::exp(-std::pow((t - T_FLASH) / 0.18, 2));
-        double r = 120 + 260 * k + 60 * pulse + 26 * breathe;
-        QRadialGradient g(QPointF(cx, cy), r);
-        QColor c0 = acc; c0.setAlpha(int(70 * k + 70 * pulse + 18 * breathe));
-        QColor c1 = acc; c1.setAlpha(int(18 * k));
-        QColor c2 = acc; c2.setAlpha(0);
-        g.setColorAt(0, c0); g.setColorAt(0.35, c1); g.setColorAt(1, c2);
-        p.setPen(Qt::NoPen); p.setBrush(g);
-        p.drawEllipse(QPointF(cx, cy), r, r);
-    }
-    // солнце, лучи, искры, ударная волна
-    {
-        double core = out_back(t / 0.6, 1.8);
-        double pulse = std::exp(-std::pow((t - T_FLASH) / 0.14, 2));
-        double R = 34 * core * (1 + 0.10 * pulse + 0.04 * breathe);
-        double rot = 30 * out_cubic(t / 1.4) + 6 * t;
-        QColor hot = acc.lighter(135);
-        p.save();
-        p.translate(cx, cy);
-        p.rotate(rot);
-        for (int i = 0; i < RAYS; ++i) {
-            double t0 = T_RAYS + i * RAY_STEP;
-            double k = (t - t0) / RAY_GROW;
-            if (k <= 0) continue;
-            double ang = 360.0 * i / RAYS - 90;
-            bool longr = i % 2 == 0;
-            double L = (longr ? 88 : 60) * (1 + 0.06 * pulse + 0.05 * breathe);
-            double grow = out_back(k, 2.6);
-            p.save();
-            p.rotate(ang);
-            double base = R * 0.82, tip = base + L * grow;
-            double w = (longr ? 11 : 8) * std::min(1.0, grow + 0.2);
-            QPainterPath path;
-            path.moveTo(base, -w / 2); path.lineTo(tip, 0); path.lineTo(base, w / 2); path.closeSubpath();
-            QLinearGradient lg(QPointF(base, 0), QPointF(tip, 0));
-            lg.setColorAt(0, hot); lg.setColorAt(1, acc);
-            p.setPen(Qt::NoPen); p.setBrush(lg); p.drawPath(path);
-            double sk = (t - t0) / 0.6;
-            if (sk > 0 && sk < 1) {
-                double d = base + L + 130 * out_cubic(sk), a = 1 - sk;
-                QColor sc = hot; sc.setAlpha(int(230 * a));
-                QLinearGradient trail(QPointF(d - 46 * a, 0), QPointF(d, 0));
-                QColor tc = acc; tc.setAlpha(0);
-                trail.setColorAt(0, tc); trail.setColorAt(1, sc);
-                p.setPen(QPen(QBrush(trail), 2.2 * a + 0.4, Qt::SolidLine, Qt::RoundCap));
-                p.drawLine(QPointF(d - 46 * a, 0), QPointF(d, 0));
-                p.setPen(Qt::NoPen); p.setBrush(sc);
-                p.drawEllipse(QPointF(d, 0), 2.6 * a + 0.6, 2.6 * a + 0.6);
+    const double cx = W / 2, cy = H / 2, line_y = cy + 30, lift = -10 * out;
+    const double hold = std::min(t, T_SEQ) < T_SEQ ? 0.0 : (ready ? 0.0 : t - T_SEQ);
+    // линия: из центра в стороны, к краям гаснет
+    const double k = out_cubic((t - T_LINE) / LINE_GROW);
+    if (k > 0) {
+        const double w = LINE_W * k;
+        QLinearGradient g(QPointF(cx - w / 2, 0), QPointF(cx + w / 2, 0));
+        g.setColorAt(0, QColor(255, 255, 255, 0)); g.setColorAt(0.5, QColor(255, 255, 255, 200));
+        g.setColorAt(1, QColor(255, 255, 255, 0));
+        p.fillRect(QRectF(cx - w / 2, line_y + lift, w, 1.5), g);
+        if (k < 1) {                                              // светящиеся кончики, пока растёт
+            for (int sx : {-1, 1}) {
+                QPointF c(cx + sx * w / 2, line_y + lift + 0.75);
+                QRadialGradient rg(c, 10);
+                rg.setColorAt(0, QColor(255, 255, 255, int(180 * (1 - k))));
+                rg.setColorAt(1, QColor(255, 255, 255, 0));
+                p.setPen(Qt::NoPen); p.setBrush(rg); p.drawEllipse(c, 10, 10);
             }
+        }
+        if (t > T_SEQ && out <= 0) {                              // плеер ещё грузится — по линии бежит блик
+            const double ph = std::fmod((t - T_SEQ) / 1.2, 1.0);
+            const double bx = cx - w / 2 + (w + 80) * ph - 40;
+            QLinearGradient sg(QPointF(bx - 40, 0), QPointF(bx + 40, 0));
+            sg.setColorAt(0, QColor(255, 255, 255, 0)); sg.setColorAt(0.5, QColor(255, 255, 255, 255));
+            sg.setColorAt(1, QColor(255, 255, 255, 0));
+            p.save(); p.setClipRect(QRectF(cx - w / 2, line_y + lift - 1, w, 4));
+            p.fillRect(QRectF(bx - 40, line_y + lift - 0.5, 80, 2.5), sg);
             p.restore();
         }
-        if (R > 0.5) {
-            QRadialGradient g(QPointF(-R * 0.3, -R * 0.3), R * 1.4);
-            g.setColorAt(0, QColor(255, 255, 245)); g.setColorAt(0.35, hot); g.setColorAt(1, acc);
-            p.setPen(Qt::NoPen); p.setBrush(g);
-            p.drawEllipse(QPointF(0, 0), R, R);
+    }
+    (void)hold;
+    // надпись: буквы поднимаются из-за линии, разрядка сходится
+    QFont f(family.isEmpty() ? QStringLiteral("Segoe UI") : family);
+    f.setPixelSize(64);
+    f.setWeight(QFont::Black);
+    QFontMetricsF fm(f);
+    const double spread = 1 - out_cubic((t - T_TEXT) / 0.8);
+    const double gap = 4 + 22 * spread;
+    QList<double> widths;
+    double total = 0;
+    for (QChar ch : text) { widths.append(fm.horizontalAdvance(ch)); total += widths.last(); }
+    total += gap * (text.size() - 1);
+    const double base_y = line_y - 14 + lift;
+    QPainterPath path;
+    p.save();
+    p.setClipRect(QRectF(0, 0, W, line_y + lift - 2));            // из-за линии: ниже неё букв не видно
+    p.setFont(f);
+    double x = cx - total / 2;
+    for (int j = 0; j < text.size(); ++j) {
+        const double kj = out_cubic((t - T_TEXT - j * LETTER_STEP) / LETTER_RISE);
+        if (kj > 0) {
+            p.setPen(QColor(228, 228, 228, int(255 * std::min(1.0, kj * 1.2))));   // чуть серее — блик виден
+            p.drawText(QPointF(x, base_y + 70 * (1 - kj)), QString(text[j]));
         }
-        double ring = (t - 0.15) / 0.8;
-        if (ring > 0 && ring < 1) {
-            QColor rc = acc; rc.setAlpha(int(150 * (1 - ring)));
-            p.setPen(QPen(rc, 2.0 * (1 - ring) + 0.3)); p.setBrush(Qt::NoBrush);
-            double rr = 30 + 200 * out_cubic(ring);
-            p.drawEllipse(QPointF(0, 0), rr, rr);
-        }
-        double ring2 = (t - T_FLASH) / 0.9;                       // вторая волна — от вспышки
-        if (ring2 > 0 && ring2 < 1) {
-            QColor rc = acc.lighter(130); rc.setAlpha(int(110 * (1 - ring2)));
-            p.setPen(QPen(rc, 1.6 * (1 - ring2) + 0.3)); p.setBrush(Qt::NoBrush);
-            double rr = 50 + 320 * out_cubic(ring2);
-            p.drawEllipse(QPointF(0, 0), rr, rr);
-        }
+        path.addText(QPointF(x, base_y), f, QString(text[j]));
+        x += widths[j] + gap;
+    }
+    p.restore();
+    const double sw = (t - T_SWEEP) / SWEEP;
+    if (sw > 0 && sw < 1) {                                       // блик пробегает по надписи
+        const double c = cx - total / 2 - 80 + (total + 160) * sw;
+        QLinearGradient band(QPointF(c - 70, 0), QPointF(c + 70, 0));
+        band.setColorAt(0, QColor(255, 255, 255, 0)); band.setColorAt(0.5, QColor(255, 255, 255, 230));
+        band.setColorAt(1, QColor(255, 255, 255, 0));
+        p.save(); p.setClipPath(path);
+        p.fillRect(QRectF(cx - total / 2 - 10, base_y - fm.ascent() - 10, total + 20, fm.height() + 20), band);
         p.restore();
-    }
-    // надпись
-    if (t >= T_TEXT) {
-        QFont f(family.isEmpty() ? QStringLiteral("Segoe UI") : family);
-        f.setPixelSize(66);
-        f.setWeight(QFont::Black);
-        QFontMetricsF fm(f);
-        const double base_y = cy + 182;
-        double spread = 1 - out_cubic((t - T_TEXT) / 0.65);
-        double gap = 6 + 30 * spread;
-        QList<double> widths;
-        double total = 0;
-        for (QChar ch : text) { widths.append(fm.horizontalAdvance(ch)); total += widths.last(); }
-        total += gap * (text.size() - 1);
-        double x = cx - total / 2;
-        p.setFont(f);
-        for (int j = 0; j < text.size(); ++j) {
-            double k = out_cubic((t - T_TEXT - j * LETTER_STEP) / 0.4);
-            if (k > 0) {
-                double dy = 22 * (1 - k);
-                int v = int(40 + 215 * k);
-                QColor col(v, v, v); col.setAlpha(int(255 * std::min(1.0, k * 1.3)));
-                p.setPen(col);
-                p.drawText(QPointF(x, base_y + dy), QString(text[j]));
-            }
-            x += widths[j] + gap;
-        }
-        double sweep = (t - T_SWEEP) / 0.5;
-        if (sweep > 0 && sweep < 1) {
-            double c = cx - total / 2 - 80 + (total + 160) * sweep;
-            QLinearGradient band(QPointF(c - 60, 0), QPointF(c + 60, 0));
-            QColor c0 = acc; c0.setAlpha(0);
-            QColor c1 = acc.lighter(140); c1.setAlpha(255);
-            band.setColorAt(0, c0); band.setColorAt(0.5, c1); band.setColorAt(1, c0);
-            QPainterPath path;
-            double xx = cx - total / 2;
-            for (int j = 0; j < text.size(); ++j) { path.addText(QPointF(xx, base_y), f, QString(text[j])); xx += widths[j] + gap; }
-            p.save(); p.setClipPath(path);
-            p.fillRect(QRectF(cx - total / 2 - 10, base_y - fm.ascent() - 10, total + 20, fm.height() + 20), band);
-            p.restore();
-        }
-        double u = out_cubic((t - (T_TEXT + 0.35)) / 0.45);
-        if (u > 0) {                                              // полоска акцента; в ожидании — бегущий блик
-            QColor uc = acc; uc.setAlpha(int(200 * u));
-            double w = 120 * u;
-            p.fillRect(QRectF(cx - w / 2, base_y + 22, w, 3), uc);
-            if (hold) {
-                double ph = std::fmod((t - T_SEQ) / 1.1, 1.0);
-                double bx = cx - w / 2 + (w + 40) * ph - 20;
-                QLinearGradient gl(QPointF(bx - 20, 0), QPointF(bx + 20, 0));
-                QColor a0(255, 255, 255, 0), a1(255, 255, 255, 220);
-                gl.setColorAt(0, a0); gl.setColorAt(0.5, a1); gl.setColorAt(1, a0);
-                p.save(); p.setClipRect(QRectF(cx - w / 2, base_y + 21, w, 5));
-                p.fillRect(QRectF(bx - 20, base_y + 21, 40, 5), gl);
-                p.restore();
-            }
-        }
+        const QPointF hc(c, base_y - fm.ascent() / 2);
+        QRadialGradient halo(hc, 90);
+        halo.setColorAt(0, QColor(255, 255, 255, int(26 * std::sin(3.14159265 * sw))));
+        halo.setColorAt(1, QColor(255, 255, 255, 0));
+        p.setPen(Qt::NoPen); p.setBrush(halo); p.drawEllipse(hc, 90, 90);
     }
 }
 
@@ -260,7 +192,7 @@ void Intro::run() {
         }
         if (ready && ready_t < 0) ready_t = t;
         double seq_end = skip ? std::min(T_SEQ, t) : T_SEQ;
-        if (fade_t0 < 0 && ready && t >= seq_end) fade_t0 = t;
+        if (fade_t0 < 0 && ready && t >= seq_end) { fade_t0 = t; fading = true; }
         double out = fade_t0 < 0 ? 0.0 : in_out((t - fade_t0) / FADE);
         const int W = std::max(1, int(r.right - r.left)), H = std::max(1, int(r.bottom - r.top));
         if (W != bw || H != bh || !bmp) {
@@ -302,7 +234,8 @@ void Intro::run() {
 
 }  // namespace
 
-// Запустить заставку (один раз): прямоугольник на экране (пиксели устройства), dpr, акцент, надпись, шрифт.
+// Запустить заставку (один раз): прямоугольник на экране (пиксели устройства), dpr, цвет (не используется —
+// заставка монохромная), надпись, шрифт.
 EUI_API int eui_intro_start(int x, int y, int w, int h, double dpr, int r, int g, int b, const wchar_t *text,
                             const wchar_t *family) {
     if (g_intro) return 0;
@@ -323,5 +256,7 @@ EUI_API void eui_intro_follow(intptr_t hwnd) { if (g_intro) g_intro->owner = rei
 // плеер всё загрузил — досмотреть сюжет и раствориться
 EUI_API void eui_intro_ready() { if (g_intro) g_intro->ready = true; }
 EUI_API int eui_intro_alive() { return g_intro && g_intro->alive ? 1 : 0; }
+// заставка начала растворяться (или уже закрылась) — в этот миг плеер собирает сцену (ph_intro)
+EUI_API int eui_intro_fading() { return !g_intro || g_intro->fading || !g_intro->alive ? 1 : 0; }
 // сколько кадров показано (проверка: заставка идёт, пока поток интерфейса занят)
 EUI_API int eui_intro_frames() { return g_intro ? g_intro->frames.load() : 0; }

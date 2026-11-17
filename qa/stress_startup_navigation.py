@@ -1,4 +1,5 @@
 """Broad startup/navigation UI audit, isolated data, no audio or network use."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,11 @@ import wave
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--layout", choices=("phantom", "new"), default="phantom")
+parser.add_argument("--cycles", type=int, default=8)
+parser.add_argument("--out", type=Path)
+args = parser.parse_args()
 sys.path.insert(0,str(ROOT/'app'))
 os.environ['QT_QPA_PLATFORM']='offscreen'
 runtime=Path(os.environ['LOCALAPPDATA'])/'Programs/ECHOES'
@@ -23,6 +29,7 @@ data=home/'.neon_player';data.mkdir()
 settings=dict(theme='Echoes Music',language='en',ya_page='collection',own_audio_output=False,
     ui_animations=True,ya_decor={},ya_skin={},discord_rpc=False,media_session=False,
     close_to_tray=False,intro_enabled=False,voice_cmd_always=False,auto_tags=False)
+settings["ya_layout"] = args.layout
 (data/'settings.json').write_text(json.dumps(settings),'utf-8')
 tracks=[]
 for index in range(400):
@@ -57,6 +64,7 @@ def qt_message(kind,context,message):
     if len(qt_messages)<120:qt_messages.append(dict(type=kind.value,message=message))
 qInstallMessageHandler(qt_message)
 win=main.MainWindow();win.resize(1440,950);win.show();shell=win._ya
+phantom = shell.__dict__.get("ph")
 started=time.perf_counter();switches=0
 
 def pump(seconds=.025):
@@ -68,22 +76,54 @@ def check(name,condition,**detail):
     entry=dict(name=name,passed=bool(condition),**detail);checks.append(entry)
     if not condition:failures.append(entry);print('FAIL '+json.dumps(entry),flush=True)
 
-def model_count():return shell.c_list.model_.rowCount()
+def collection_view():
+    panel = phantom._panels.get("collection") if phantom is not None else None
+    return panel.list if panel is not None else shell.c_list
+
+
+def collection_search():
+    panel = phantom._panels.get("collection") if phantom is not None else None
+    return panel.search if panel is not None else shell.c_search
+
+
+def model_count():
+    return collection_view().model_.rowCount()
 
 def collection_checkpoint(name,expected=400):
     shell.show_page('collection');pump(.04)
+    view = collection_view()
     check(name,model_count()==expected and len(win.library)==400,
-          rows=model_count(),library=len(win.library),filter=list(shell._coll_filter),search=shell.c_search.text(),
-          list_visible=shell.c_list.isVisible(),viewport=[shell.c_list.viewport().width(),shell.c_list.viewport().height()])
+          rows=model_count(),library=len(win.library),search=collection_search().text(),
+          list_visible=view.isVisible(),viewport=[view.viewport().width(),view.viewport().height()])
+
+
+def section_view(key):
+    if key == "lyrics":
+        return phantom.right if phantom is not None else shell.__dict__.get("_now_playing")
+    panel = phantom._panels.get(key) if phantom is not None else None
+    return panel if panel is not None else shell.pages[key]
+
+
+def is_selected(key):
+    if key != "lyrics":
+        return shell.stack.currentWidget() is section_view(key)
+    if phantom is not None:
+        return phantom.mode == "text" and not phantom.overlay_open()
+    lyrics = section_view(key)
+    return lyrics is not None and lyrics.is_open() and lyrics.mode() == "lyrics"
 
 def switch(key,turn=True):
     global switches
     start=time.perf_counter();shell.show_page(key)
     if turn:pump(.008)
     samples.append((time.perf_counter()-start)*1000);switches+=1
-    check('selected_'+key,shell.stack.currentWidget() is shell.pages[key],roundtrip=switches)
+    check('selected_'+key,is_selected(key),roundtrip=switches)
 
-def select_chip(text):
+def select_chip(key):
+    if phantom is not None:
+        phantom._panels["collection"].chips["fav" if key == "liked" else key].click()
+        return True
+    text = "Мне нравится" if key == "liked" else "Всё"
     for index in range(shell.c_chips.count()):
         widget=shell.c_chips.itemAt(index).widget()
         if isinstance(widget,QPushButton) and widget.text()==text:
@@ -92,17 +132,23 @@ def select_chip(text):
 
 try:
     pump(.5)
+    check('requested_layout', (phantom is not None) == (args.layout == "phantom"))
     collection_checkpoint('startup_preloaded_collection')
     music=[key for key in ('wave','search','foryou','collection','albums','follows','tierlist','duel','net','profile','queue','lyrics','settings') if key in shell.pages]
     for key in music:
         switch(key);overlay=ui_anim._OVERLAYS.get(id(shell.stack))
         if overlay is not None:overlay._prepare()
-        page=shell.pages[key]
-        check('cold_geometry_'+key,page.width()>100 and page.height()>100,size=[page.width(),page.height()])
+        page=section_view(key)
+        check('cold_geometry_'+key,page is not None and page.width()>100 and page.height()>100)
     collection_checkpoint('collection_after_first_visits')
+    if phantom is not None:
+        last_row = collection_view().model_.rows[-1]
+        switch('profile')
+        collection_checkpoint('phantom_collection_reopened')
+        check('unchanged_phantom_collection_reuses_model_rows', collection_view().model_.rows[-1] is last_row)
 
     # Repeated navigation with actual event turns, followed by coalesced bursts.
-    for cycle in range(8):
+    for cycle in range(args.cycles):
         for key in music:switch(key)
         collection_checkpoint('collection_roundtrip_'+str(cycle))
     for cycle in range(20):
@@ -113,18 +159,18 @@ try:
     check('no_frozen_overlay_after_idle',len(ui_anim._OVERLAYS)==0,overlays=len(ui_anim._OVERLAYS))
 
     shell.show_page('collection');pump(.02)
-    check('liked_chip_exists',select_chip('Мне нравится'))
+    check('liked_chip_exists',select_chip('liked'))
     pump(.01);check('liked_rows',model_count()==40,rows=model_count())
-    check('all_chip_exists',select_chip('Всё'))
-    shell.c_search.setText('definitely-no-synthetic-result');pump(.01)
+    check('all_chip_exists',select_chip('all'))
+    collection_search().setText('definitely-no-synthetic-result');pump(.01)
     check('empty_search_is_intentional',model_count()==0,rows=model_count())
-    shell.c_search.clear();pump(.01)
+    collection_search().clear();pump(.01)
     collection_checkpoint('clear_search_restores_collection')
-    shell.c_search.setText('Song 12');pump(.01)
+    collection_search().setText('Song 12');pump(.01)
     count=model_count();check('search_has_matches',0<count<400,rows=count)
     switch('profile');switch('collection')
-    check('search_state_retained',shell.c_search.text()=='Song 12' and model_count()==count,rows=model_count())
-    shell.c_search.clear();pump(.01)
+    check('search_state_retained',collection_search().text()=='Song 12' and model_count()==count,rows=model_count())
+    collection_search().clear();pump(.01)
 
     # Changes that used to invalidate/replace a prepared page snapshot.
     for width,height in ((1080,720),(1600,1050),(1280,850)):
@@ -152,8 +198,8 @@ try:
     # snapshot or turn an otherwise healthy collection into an empty view.
     shell.show_page('collection');pump(.02)
     replacements=[dict(track,title='Retagged '+str(index)) for index,track in enumerate(win.library)]
-    win.library=replacements;win._save_library();shell.on_tracks_changed();pump(.025)
-    rows=shell.c_list.model_.rows
+    win.library[:]=replacements;win._save_library();shell.on_tracks_changed();pump(.025)
+    rows=collection_view().model_.rows
     check('same_size_replacement_refreshes_track_identity',len(rows)==400 and
           all(row['t']['title'].startswith('Retagged ') for row in rows),rows=len(rows))
     win.library=[dict(track,title='Song '+str(index)) for index,track in enumerate(win.library)]
@@ -172,22 +218,22 @@ try:
     check('late_import_persisted',len(json.loads(main.LIB_FILE.read_text('utf-8')))==401)
     win.library.pop();win._save_library();shell.on_tracks_changed();pump(.02)
 
-    select_chip('Мне нравится');pump(.01)
+    select_chip('liked');pump(.01)
     shell._on_profiles({track['path']:{'families':['rock'],'energy':.5,'valence':.5,'tempo':120}
                         for track in win.library})
     pump(.02)
-    check('late_analysis_keeps_liked_filter',shell._coll_filter==('liked',None) and model_count()==40,
-          rows=model_count(),filter=list(shell._coll_filter))
-    select_chip('Всё');shell.c_search.setText('Song 12');pump(.01)
+    check('late_analysis_keeps_liked_filter',model_count()==40,rows=model_count())
+    select_chip('all');collection_search().setText('Song 12');pump(.01)
     search_count=model_count();shell._on_profiles({});pump(.02)
     check('late_analysis_keeps_search_results',model_count()==search_count and search_count>0,
-          before=search_count,after=model_count(),search=shell.c_search.text())
-    shell.c_search.clear();pump(.01)
+          before=search_count,after=model_count(),search=collection_search().text())
+    collection_search().clear();pump(.01)
 
-    # Simulate the initially empty view before its first successful rebuild.
-    shell.c_list.set_rows([])
+    # Optional per-track mood profiles belong to the New collection.
     shell._profiles=None
     with patch.object(win,'_ya_profiles',side_effect=RuntimeError('synthetic optional analysis unavailable')):
+        if phantom is None:
+            shell.c_list.set_rows([])
         shell._dirty.add('collection');shell.show_page('collection');pump(.02)
         check('optional_analysis_failure_preserves_collection',model_count()==400,rows=model_count())
     fail=RuntimeError('synthetic transient page build failure')
@@ -238,6 +284,7 @@ finally:
     temporary.cleanup()
 
 report=dict(scope='Isolated real-app startup, repeated music/net tabs, filters/language/resize/restore; no radio/editor/full playback scenario',
+    layout=args.layout,
     app_version_at_start=(ROOT/'app/version.txt').read_text('utf-8').strip(),
     fixture=dict(tracks=400,liked=40,network='blocked',audio='not played',profile='temporary',
                  real_user_data='not used'),music_switches=switches,checks=len(checks),passed=sum(item['passed'] for item in checks),
@@ -245,7 +292,8 @@ report=dict(scope='Isolated real-app startup, repeated music/net tabs, filters/l
     selected_switch_elapsed_ms=dict(median=round(sorted(samples)[len(samples)//2],3),maximum=round(max(samples),3)),
     elapsed_seconds=round(time.perf_counter()-started,3),
     limitations='Offscreen lifecycle/invariant stress, not measured on-screen FPS; real network, audio playback, radio and native editor excluded.')
-out=ROOT/'qa/results/startup-navigation-stress-2026.11.02-5.json';out.parent.mkdir(parents=True,exist_ok=True)
+out=args.out or ROOT / "qa" / "results" / f"startup-navigation-{args.layout}.json"
+out.parent.mkdir(parents=True,exist_ok=True)
 out.write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n','utf-8')
 print('STRESS_RESULT '+json.dumps({k:v for k,v in report.items() if k not in ('qt_messages','uncaught')}),flush=True)
 if failures or errors:sys.exit(1)

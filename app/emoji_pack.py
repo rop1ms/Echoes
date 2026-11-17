@@ -16,6 +16,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
 
+from raster_budget import ByteLRU
+
 DIR = data_home.root() / "emoji"
 SOURCES = (
     "https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/png/72/emoji_u{code}.png",
@@ -33,7 +35,7 @@ class _Bus(QObject):
 
 
 bus = _Bus()
-_pm_cache: dict = {}
+_pm_cache = ByteLRU(4 * 2**20)
 _loading: set = set()
 _lock = threading.Lock()
 
@@ -97,7 +99,7 @@ def pixmap(ch: str, size: int = 20) -> QPixmap:
             pm = src.scaled(size * 2, size * 2, Qt.AspectRatioMode.KeepAspectRatio,
                             Qt.TransformationMode.SmoothTransformation)
             pm.setDevicePixelRatio(2)
-            _pm_cache[key] = pm
+            _pm_cache.put(key, pm, pm.width() * pm.height() * 4)
             return pm
     with _lock:
         start = ch not in _loading

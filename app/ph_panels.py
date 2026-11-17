@@ -355,6 +355,13 @@ class PhLibraryPanel(QWidget):
         return (len(lib), id(lib), self.filter, self.sort, self.desc, self.folder,
                 len(self.win.settings.get("play_history") or {}), self._missing is not None)
 
+    def invalidate(self):
+        self._sig = None
+
+    def refresh_on_open(self):
+        # Playback counts and the favourites list can change without a library edit.
+        self.refresh(force=self.filter in ("fav", "recent") or self.sort == "plays")
+
     def refresh(self, force=False):
         sig = self.signature()
         if not force and sig == self._sig:
@@ -380,18 +387,19 @@ class PhLibraryPanel(QWidget):
         if self.filter == "recent" and key == "added":
             rows.sort(key=lambda r: (hist.get(str(r["t"].get("path", "")), {}).get("last", ""),
                                      hist.get(str(r["t"].get("path", "")), {}).get("count", 0)), reverse=True)
+        elif key == "added":
+            if self.desc:
+                rows.reverse()
         else:
             from yamusic_theme import sanitize_title
-            kf = {"added": lambda r: r["i"],
-                  "title": lambda r: sanitize_title(r["t"].get("title", "") or "").casefold(),
+            kf = {"title": lambda r: sanitize_title(r["t"].get("title", "") or "").casefold(),
                   "artist": lambda r: str(r["t"].get("artist") or "").casefold(),
                   "album": lambda r: str(r["t"].get("album") or "").casefold(),
                   "duration": lambda r: float(r["t"].get("duration") or 0),
                   "plays": lambda r: int(hist.get(str(r["t"].get("path", "")), {}).get("count", 0))}[key]
-            desc = self.desc if key in ("added", "duration", "plays") else not self.desc
+            desc = self.desc if key in ("duration", "plays") else not self.desc
             rows.sort(key=kf, reverse=desc)
         self.list.set_rows(rows)
-        self.list.set_filter(self.search.text())
         n = self.list.model_.rowCount()
         self.count.setText(f"{n} треков" if n != 1 else "1 трек")
         msg = {"fav": "В избранном пока пусто — ♥ у трека добавит его сюда",

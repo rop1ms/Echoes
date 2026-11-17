@@ -19,6 +19,8 @@ import json
 import re
 from pathlib import Path
 
+from raster_budget import ByteLRU
+
 DIR = data_home.root() / "net" / "reactions"
 MINE = DIR / "mine"
 INDEX = MINE / "mine.json"
@@ -26,7 +28,7 @@ SIZE = 64
 MAX_BYTES = 16 * 1024
 MAX_MINE = 40
 _ID = re.compile(r"^c:[0-9a-f]{16}$")
-_pm_cache: dict = {}
+_pm_cache = ByteLRU(4 * 2**20)
 
 
 def is_custom(val) -> bool:
@@ -166,13 +168,15 @@ def pixmap(rid, size=20):
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QPixmap
     key = (rid, size)
-    if key in _pm_cache:
-        return _pm_cache[key]
+    hit = _pm_cache.get(key)
+    if hit is not None:
+        return hit
     f = _file(rid)
     if f is None:
         return QPixmap()
     pm = QPixmap(str(f)).scaled(size * 2, size * 2, Qt.AspectRatioMode.KeepAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation)
-    pm.setDevicePixelRatio(2)
-    _pm_cache[key] = pm
+    if not pm.isNull():
+        pm.setDevicePixelRatio(2)
+        _pm_cache.put(key, pm, pm.width() * pm.height() * 4)
     return pm

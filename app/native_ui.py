@@ -109,6 +109,7 @@ def _setup(lib):
         "eui_intro_follow": (None, [ctypes.c_ssize_t]),
         "eui_intro_ready": (None, []),
         "eui_intro_alive": (I, []),
+        "eui_intro_fading": (I, []),
         "eui_gate_install": (P, [P, ctypes.POINTER(I), I, ctypes.c_char_p]),
         "eui_gate_remove": (None, [P]),
         "eui_grab_window_area": (I, [P, P]),
@@ -125,7 +126,11 @@ def _setup(lib):
         "eui_draw_liquid": (None, [P, P, I, I, I, ctypes.POINTER(W)] + [ctypes.POINTER(D)] * 5 + [D, I, P, P, D]),
     }
     for name, (res, args) in sig.items():
-        fn = getattr(lib, name)
+        fn = getattr(lib, name, None)
+        if fn is None and name in ("eui_intro_fading",):      # новее DLL — со старой просто без неё
+            continue
+        if fn is None:
+            raise AttributeError(name)
         fn.restype, fn.argtypes = res, args
     lib.eui_strip_callbacks(_on_click, _on_hover, _on_gone, _on_need)
     lib.eui_liquid_surface_callback(_on_glass)

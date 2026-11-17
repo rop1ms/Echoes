@@ -25,6 +25,7 @@ try {
 Clear-Host
 
 . (Join-Path $PSScriptRoot 'launcher.ps1')
+. (Join-Path $PSScriptRoot 'player.ps1')
 . (Join-Path $PSScriptRoot 'downloads.ps1')
 
 $APP_NAME    = 'ECHOES'
@@ -150,11 +151,7 @@ function Invoke-Native([string]$Exe, [string[]]$Arguments, [switch]$ShowPip) {
 }
 
 function Stop-Running {
-    try {
-        Get-Process -Name pythonw, python -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir, [StringComparison]::OrdinalIgnoreCase) } |
-            ForEach-Object { Warn 'closing the running one ECHOES…'; $_ | Stop-Process -Force; Start-Sleep 1 }
-    } catch {}
+    if ((Stop-EchoesRuntime $InstallDir) -gt 0) { Info 'closing running ECHOES…' }
 }
 
 function New-Shortcut([string]$Path, [string]$Target, [string]$Arguments, [string]$WorkDir, [string]$Icon, [string]$Desc) {
@@ -366,7 +363,7 @@ if ((Test-Path (Join-Path $FF_DIR 'ffmpeg.exe')) -and (Test-Path (Join-Path $FF_
 # ── 7. shortcuts ─────────────────────────────────────────────────────────────
 Step 7 'Shortcuts and registration in Windows'
 $main = Join-Path $APP_DIR 'main.py'
-$ico  = Join-Path $APP_DIR 'icon.ico'
+$player = Install-EchoesPlayer $InstallDir
 $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $uninstArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'uninstall.ps1')`""
 # GUI launcher is optional for older distributions; keep the direct player shortcut too.
@@ -374,22 +371,22 @@ $launcherTarget = Join-Path $InstallDir 'ECHOES Launcher.exe'
 if ($launcherSource) {
     try {
         Install-EchoesLauncher $launcherSource $InstallDir
-        New-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $ico 'ECHOES — launch and updates'
+        New-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $launcherTarget 'ECHOES — launch and updates'
         $launcherMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES'
         New-Item -ItemType Directory -Path $launcherMenu -Force | Out-Null
-        New-Shortcut (Join-Path $launcherMenu 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $ico 'ECHOES — launch and updates'
+        New-Shortcut (Join-Path $launcherMenu 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $launcherTarget 'ECHOES — launch and updates'
     } catch { Warn "launcher not copied: $($_.Exception.Message)" }
 }
 try {
     $desk = [Environment]::GetFolderPath('Desktop')
-    New-Shortcut (Join-Path $desk 'ECHOES.lnk') $PYW "`"$main`"" $APP_DIR $ico 'ECHOES — music player'
+    New-Shortcut (Join-Path $desk 'ECHOES.lnk') $player "`"$main`"" $APP_DIR $player 'ECHOES — music player'
     Ok 'desktop shortcut'
 } catch { Warn "desktop shortcut not created: $($_.Exception.Message)" }
 try {
     $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES'
     New-Item -ItemType Directory -Path $menu -Force | Out-Null
-    New-Shortcut (Join-Path $menu 'ECHOES.lnk') $PYW "`"$main`"" $APP_DIR $ico 'ECHOES — music player'
-    New-Shortcut (Join-Path $menu 'Delete ECHOES.lnk') $psExe $uninstArgs $InstallDir $ico 'Delete ECHOES'
+    New-Shortcut (Join-Path $menu 'ECHOES.lnk') $player "`"$main`"" $APP_DIR $player 'ECHOES — music player'
+    New-Shortcut (Join-Path $menu 'Delete ECHOES.lnk') $psExe $uninstArgs $InstallDir $player 'Delete ECHOES'
     Ok 'start menu»'
 } catch { Warn "Start menu shortcut not created: $($_.Exception.Message)" }
 try {
@@ -399,7 +396,7 @@ try {
     try { $size = [int]((Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum / 1KB) } catch {}
     $props = @{
         DisplayName = 'ECHOES'; DisplayVersion = $APP_VERSION; Publisher = 'ECHOES';
-        DisplayIcon = $ico; InstallLocation = $InstallDir;
+        DisplayIcon = "$player,0"; InstallLocation = $InstallDir;
         UninstallString = "`"$psExe`" $uninstArgs"; NoModify = 1; NoRepair = 1; EstimatedSize = $size
     }
     foreach ($k in $props.Keys) {
@@ -427,6 +424,6 @@ Write-Host '   Folder ECHOES_Setup now you can delete.' -ForegroundColor DarkGra
 Write-Host ''
 $go = Read-Host '   Start ECHOES now? [Enter = yes / n = no]'
 if ($go -notmatch '^(n|n|no|no)$') {
-    Start-Process -FilePath $PYW -ArgumentList "`"$main`"" -WorkingDirectory $APP_DIR
+    Start-Process -FilePath $player -ArgumentList "`"$main`"" -WorkingDirectory $APP_DIR
 }
 exit 0

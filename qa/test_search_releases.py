@@ -5,6 +5,7 @@ python qa/test_search_releases.py [папка-для-картинок]
 """
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 source = Path(__file__).with_name('ui_smoke.py').read_text('utf-8')
 exec(compile(source.split('win = None')[0], str(Path(__file__).with_name('ui_smoke.py')), 'exec'))
@@ -51,7 +52,10 @@ playlists = [{'title': f'Плейлист {i}', 'artist': 'user', 'type': 'Пл�
               'thumb_url': ''} for i in range(6)]
 tracks = [{'title': f'Трек {i}', 'artist': 'Daft Punk', 'url': f'https://music.youtube.com/watch?v={i}',
            'thumb_url': '', 'source': 'ytm', 'duration': 200} for i in range(3)]
-res._show('daft punk', {'tracks': tracks, 'artists': [], 'albums': albums, 'playlists': playlists, 'errors': []})
+win.settings["stream_default"] = True
+with patch.object(win.streams, "prefetch") as prefetch:
+    res._show('daft punk', {'tracks': tracks, 'artists': [], 'albums': albums, 'playlists': playlists, 'errors': []})
+check(prefetch.call_count == 3, 'для первых трёх треков запланирована подготовка потока')
 heads = [l.text() for l in res.findChildren(QLabel)]
 check(any('Альбомы' in h for h in heads), 'строка «Альбомы» есть')
 check(any('Публичные плейлисты' in h for h in heads), 'строка «Публичные плейлисты» есть')

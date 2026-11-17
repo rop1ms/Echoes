@@ -1,0 +1,19 @@
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0), prodvers=(1, 0, 0, 0),
+    mask=0x3f, flags=0, OS=0x40004, fileType=0x1, subtype=0, date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904b0', [
+        StringStruct('FileDescription', 'Echoes Launcher'),
+        StringStruct('FileVersion', '1.0.0.0'),
+        StringStruct('InternalName', 'Echoes Launcher'),
+        StringStruct('OriginalFilename', 'ECHOES Launcher.exe'),
+        StringStruct('ProductName', 'Echoes'),
+        StringStruct('ProductVersion', '1.0.0.0')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)

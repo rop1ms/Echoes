@@ -57,8 +57,7 @@ check(abs(c.width() / max(1, c.width() + r.width()) - .41) < .03, f"колонк
 check(c.bottom() < p_.top() and all(p_.bottom() < w.geometry().top() for w in lay.widgets),
       "обложка → плеер → виджеты сверху вниз")
 check(all(w.geometry().bottom() < shell.height() for w in lay.widgets), "виджеты помещаются в окно")
-isl = lay.island.geometry()
-check(abs(isl.center().x() - W / 2) <= 2, "островок — по центру окна")
+check(not hasattr(lay, "island"), "островка «сейчас играет» в верхней полосе нет")
 
 # ── текст в правой колонке ── #
 win.library = [{"path": str(audit_home / f"{i}.wav"), "title": f"Трек {i}", "artist": "Артист", "duration": 200,
@@ -251,6 +250,7 @@ ph_panels.set_ph(win, cover_style="info")
 lay.apply_appearance(["cover_style"])
 # ── виджеты слева (этап 6): все виды рисуются, звуковые крутятся только на своём виде ── #
 import ph_cards  # noqa: E402
+import ph_style as ph  # noqa: E402
 _wc = lay.widgets[0]
 _was = _wc.widget_kind()
 for _k, _a, _b in ph_cards.KINDS:
@@ -278,6 +278,136 @@ lay.edit._act("done", None)
 settle(.6)
 check(not lay.edit.isVisible() and lay.cover.isVisible() and win.settings.get("ph_left")[0] == "cover",
       "«Готово» — блоки на местах, порядок сохранён")
+# ── размеры виджетов: половина → 1:1 (три в ряд) → вся ширина; все 1:1 — колонка уже, текст шире ── #
+while len(lay.widgets) < 3:
+    lay.add_block("clock")
+_rx0 = lay.right.geometry().left()
+lay.set_block_size(lay.widgets[0], "half")
+_pl = lay.block_size("player")
+_pn = [lay.next_size("player")]
+lay.set_block_size("player", "half")
+_pn.append(lay.next_size("player"))
+lay.set_block_size("player", _pl)
+check(lay.next_size(lay.widgets[0]) == "third" and "third" not in _pn,
+      "кнопка размера: половина → 1:1; у плеера квадрата нет")
+for _w in lay.widgets:
+    lay.set_block_size(_w, "third")
+lay.relayout()
+_g = [lay.left_rects[id(_w)] for _w in lay.widgets[:3]]
+check(len({_r.top() for _r in _g}) == 1 and all(abs(_r.width() - _r.height()) <= 2 for _r in _g),
+      f"три виджета 1:1 в одном ряду, квадратные ({[(_r.width(), _r.height()) for _r in _g]})")
+check(lay.right.geometry().left() < _rx0 - 40, f"все виджеты 1:1 — текст сдвинулся влево ({_rx0} → {lay.right.geometry().left()})")
+check(all(":third" in x for x in win.settings["ph_left"] if x.startswith("w")), "размер 1:1 сохранён")
+if SHOT:
+    settle(.4)
+    win.grab().save(SHOT.rsplit(".", 1)[0] + "_squares.png")
+    from PyQt6.QtGui import QImage as _QI, QPainter as _QP  # noqa: E402
+    _wq = lay.widgets[0]
+    _sw = _wq.width()
+    _sheet = _QI(_sw * 4 + 30, _sw * 3 + 20, _QI.Format.Format_ARGB32)
+    _sheet.fill(0xff000000)
+    _qp = _QP(_sheet)
+    for _n, (_k, _a, _b) in enumerate(ph_cards.KINDS):
+        _wq.set_kind(_k)
+        _wq.tick()
+        settle(.05)
+        _qp.drawPixmap((_n % 4) * (_sw + 10), (_n // 4) * (_sw + 10), _wq.grab())
+    _qp.end()
+    _sheet.save(SHOT.rsplit(".", 1)[0] + "_square_kinds.png")
+lay.set_block_size(lay.widgets[0], "half")
+lay.relayout()
+check(lay.right.geometry().left() == _rx0, "один виджет не 1:1 — колонка прежней ширины")
+for _w in lay.widgets[1:]:
+    lay.set_block_size(_w, "half")
+lay.relayout()
+# ── «один в ряду»: половина не подсаживается к соседу ── #
+_wa, _wb = lay.widgets[0], lay.widgets[1]
+lay.relayout()
+check(lay.left_rects[id(_wa)].top() == lay.left_rects[id(_wb)].top(), "две половины — в одном ряду")
+lay.set_solo(_wa, True)
+lay.relayout()
+_ra, _rb = lay.left_rects[id(_wa)], lay.left_rects[id(_wb)]
+check(_rb.top() > _ra.bottom() and _ra.width() < lay.left_area().width() * .6,
+      "«один в ряду» — виджет половинной ширины стоит один, сосед ушёл в следующий ряд")
+check(any(x.endswith(":solo") for x in win.settings["ph_left"]), f"«один в ряду» сохранён ({win.settings['ph_left']})")
+if SHOT:
+    lay.toggle_edit()
+    settle(.6)
+    win.grab().save(SHOT.rsplit(".", 1)[0] + "_solo_edit.png")
+    lay.edit._act("solo", _wa)
+    check(not lay.is_solo(_wa), "кнопкой в правке — снова рядом с соседом")
+    lay.edit._act("done", None)
+    settle(.6)
+lay.set_solo(_wa, False)
+lay.relayout()
+# ── высота виджета: авто (до низа) / 1 клетка / 2 клетки — рядом и ниже может быть пусто ── #
+_wc3 = lay.widgets[2]
+_bot = lay.left_area().bottom()
+check(abs(lay.left_rects[id(_wc3)].bottom() - _bot) <= 2, "по умолчанию нижний виджет растянут до низа колонки")
+lay.set_block_height(_wa, "1")
+lay.set_block_height(_wb, "2")
+lay.set_block_height(_wc3, "1")
+lay.relayout()
+_ra, _rb, _rc = (lay.left_rects[id(_x)] for _x in (_wa, _wb, _wc3))
+check(_ra.top() == _rb.top() and abs(_rb.height() - (2 * _ra.height() + ph.px(18))) <= 2,
+      f"в одном ряду: виджет в 1 клетку и в 2 клетки ({_ra.height()} / {_rb.height()})")
+check(_rc.top() > _rb.bottom() and _rc.height() == _ra.height() and _rc.bottom() <= _bot + 2,
+      f"виджет в 1 клетку внизу не растянут и помещается в колонку ({_rc.bottom()} ≤ {_bot})")
+check(any(":h1" in x for x in win.settings["ph_left"]) and any(":h2" in x for x in win.settings["ph_left"]),
+      f"высота сохранена ({win.settings['ph_left']})")
+check(lay.next_height(_wa) == "2" and lay.next_height(_wb) == "auto" and not lay.has_height("player"),
+      "кнопка высоты: авто → 1 → 2 → авто; у плеера её нет")
+if SHOT:
+    lay.toggle_edit()
+    settle(.6)
+    win.grab().save(SHOT.rsplit(".", 1)[0] + "_height_edit.png")
+    lay.edit._act("height", _wc3)
+    check(lay.block_height(_wc3) == "2", "кнопкой в правке — следующая высота")
+    lay.edit._act("done", None)
+    settle(.6)
+for _x in (_wa, _wb, _wc3):
+    lay.set_block_height(_x, "auto")
+lay.relayout()
+# ── всё слева в половину ширины поодиночке: текст занимает свободное место; маленький плеер; стрелки ── #
+_rx1 = lay.right.geometry().left()
+for _x in ["cover", "player"] + lay.widgets:
+    lay.set_block_size(_x, "half")
+    lay.set_solo(_x, True)
+lay.relayout()
+settle(.3)
+check(lay.right.geometry().left() < _rx1 - 100,
+      f"справа в левой колонке пусто — текст сдвинулся влево ({_rx1} → {lay.right.geometry().left()})")
+check(lay.player.compact and lay.player.b_extra.isVisible() and not lay.player.b_shuffle.isVisible(),
+      "маленький плеер: «перемешать», «повтор», громкость — в меню кнопки")
+check(all(_b.isVisible() for _b in lay.widgets[0]._arrows), "у узкого виджета стрелки ‹ › на месте")
+if SHOT:
+    win.grab().save(SHOT.rsplit(".", 1)[0] + "_halves.png")
+for _x in ["cover", "player"] + lay.widgets:
+    lay.set_solo(_x, False)
+    lay.set_block_size(_x, "full" if isinstance(_x, str) else "half")
+lay.relayout()
+check(lay.right.geometry().left() == _rx1 and not lay.player.b_extra.isVisible(), "вернули размеры — раскладка прежняя")
+# ── сборка сцены при запуске (ph_intro): чёрный слой → кусочки → живой плеер ── #
+import ph_intro  # noqa: E402
+check(ph_intro.prepare(win) and lay._build_in is not None and lay._build_in.isVisible(), "сборка: чёрный слой до заставки")
+ph_intro.start(win)
+_bi = lay._build_in
+check(_bi is not None and len([_p for _p in _bi._pieces if _p.kind == "card"]) == len(lay.left_items),
+      "сборка: у каждой карточки слева — свои кусочки")
+if SHOT:
+    from PyQt6.QtGui import QImage as _QI2, QPainter as _QP2  # noqa: E402
+    _fw, _fh = win.width() // 3, win.height() // 3
+    _sh2 = _QI2(_fw * 3, _fh * 2, _QI2.Format.Format_RGB32)
+    _qp2 = _QP2(_sh2)
+    _t0b = time.monotonic()
+    for _n, _tt in enumerate((.12, .35, .6, .85, 1.1, 1.5)):
+        while time.monotonic() - _t0b < _tt:
+            app.processEvents()
+        _qp2.drawPixmap(QPoint((_n % 3) * _fw, (_n // 3) * _fh), win.grab().scaled(_fw, _fh))
+    _qp2.end()
+    _sh2.save(SHOT.rsplit(".", 1)[0] + "_build.png")
+settle(2.4)
+check(lay._build_in is None, "сборка закончилась — слой убран, под ним живой плеер")
 lay.widgets[0].set_kind("eq")
 for _sl in getattr(win, "_eq_sliders", [])[:2]:
     _sl.setValue(7)

@@ -23,6 +23,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from net_perf import batch_updates
+from raster_budget import ByteLRU
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QObject, pyqtSignal, QSize, QEvent
 from PyQt6.QtGui import (QColor, QFont, QPainter, QPainterPath, QPixmap, QImage, QLinearGradient, QRadialGradient, QPen,
@@ -39,7 +40,7 @@ from yamusic_theme import (YELLOW, MUTED, ya_font, ya_icon, icon_button, cover_p
                            section_title, HRow, _clear_layout, sanitize_title)
 
 DATA_DIR = data_home.root() / "net"
-_AVATARS = OrderedDict()
+_AVATARS = ByteLRU(8 * 2**20)
 
 NET_QSS = f"""
 QFrame#NetCard {{ background:rgba(255,255,255,0.045); border:1px solid rgba(255,255,255,0.06); border-radius:16px; }}
@@ -101,7 +102,6 @@ def avatar_pm(onion: str, name: str, size: int, online=None, photo: str = "") ->
     key = (onion, name, size, online, photo, photo_stamp, frame.cacheKey() if frame is not None else 0)
     hit = _AVATARS.get(key)
     if hit is not None:
-        _AVATARS.move_to_end(key)
         return QPixmap(hit)
     dpr = 2
     pm = QPixmap(size * dpr, size * dpr)
@@ -147,9 +147,7 @@ def avatar_pm(onion: str, name: str, size: int, online=None, photo: str = "") ->
     p.end()
     # Large profile portraits should not evict hundreds of small feed avatars.
     if size <= 160:
-        _AVATARS[key] = QPixmap(pm)
-        while len(_AVATARS) > 384:
-            _AVATARS.popitem(last=False)
+        _AVATARS.put(key, QPixmap(pm), pm.width() * pm.height() * 4)
     return pm
 
 

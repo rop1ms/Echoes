@@ -15,4 +15,12 @@ $inc=@("/I$Qt\include","/I$Qt\include\QtCore","/I$Qt\include\QtGui","/I$Qt\inclu
 $libs=@("$Qt\lib\Qt6Core.lib","$Qt\lib\Qt6Gui.lib","$Qt\lib\Qt6Widgets.lib")
 & cl.exe /nologo /std:c++17 /permissive- /Zc:__cplusplus /EHsc /O2 /MD /utf-8 /W3 /DNDEBUG /DQT_NO_DEBUG /DUNICODE /D_UNICODE /DNOMINMAX $inc (Join-Path $here 'launcher.cpp') /Fo"$obj\\" /LD /Fe"$out" /link /NOLOGO "/IMPLIB:$obj\echoes_launcher.lib" $libs
 if($LASTEXITCODE -ne 0){throw 'Native launcher build failed'}
-Get-Item -LiteralPath $out | Select-Object Name,Length
+
+$root = Split-Path -Parent (Split-Path -Parent $here)
+$player = Join-Path $root 'setup/Echoes.exe'
+$resources = Join-Path $obj 'player.res'
+& rc.exe /nologo /i (Join-Path $root 'app') /fo $resources (Join-Path $here 'player.rc')
+if($LASTEXITCODE -ne 0){throw 'Player resources build failed'}
+& cl.exe /nologo /std:c++17 /EHsc /O2 /MT /W3 /DUNICODE /D_UNICODE /DNOMINMAX (Join-Path $here 'player.cpp') $resources /Fo"$obj\\" /Fe"$player" /link /NOLOGO /SUBSYSTEM:WINDOWS user32.lib
+if($LASTEXITCODE -ne 0){throw 'Native player build failed'}
+Get-Item -LiteralPath $out, $player | Select-Object Name,Length
