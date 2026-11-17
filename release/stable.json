@@ -1,6 +1,6 @@
 {
  "channel": "stable",
- "commit": "329954b94cf9798d30576eeb34c0092e2ce7f330",
+ "commit": "6ca1b58750693d0fd3b30dd7888379c8f384cda1",
  "files": {
   "app/ach_icons.py": "47ffb85503510ffbb5e904657b59e7735900818821c459d56c3efdc7ab5a9d79",
   "app/ambience.py": "3155bd80ec6632ca38b8e941a98e0c90ff257230d3ba00138ddb575ac7859de3",
@@ -380,7 +380,7 @@
   "app/ph_kit.py": "53c1e6da379c343ce8f552b137f0a553da733ecb9cd25f04f66ad5e8aa9ebb8f",
   "app/ph_motion.py": "d7b632d36dd27d66d01d4d3995e38054f61aed5d79e1f329dca04a7d51bce64e",
   "app/ph_panels.py": "930a644d0525a9c40ddc34471734f3cde51fc459ec122949216a786a7a9802c6",
-  "app/ph_shell.py": "bef2c2ea3b1969f968478a8f35871f386ddc6a259bb2efad8b840790b427d7ce",
+  "app/ph_shell.py": "a957006e52b7de7f2c155cbb5c7206a264f819a743532582d7f46df9613ef9c7",
   "app/ph_shop.py": "0b7a64c08496ea1ed494fffd8c1875309df5ba7c67068f243c93d88b8341c8c4",
   "app/ph_style.py": "28e01c1cae9a756ed3c9289c71d2e39fb3d70fb96822dd5eb274673b34143b05",
   "app/ph_widgets.py": "969413d69bb203092da56178871d8e88cf950255f121089947b0194604f647b5",
@@ -440,7 +440,7 @@
   "app/ui_rounding.py": "dfaad7ff031c00345c8b1900417d85e7d6fc17b0a7fb4a08dd2fc18f286bc413",
   "app/ui_scale.py": "cfe315b0f3ffae45fe9b8fe22ebac4cee61737c028425786de364ad73146278b",
   "app/ui_symbols.py": "76dcde27573b72683749f02d04cf53811439919c73202339c6f78fb66964bd58",
-  "app/version.txt": "6b6f3aec61d1d2576452584ea702d7fe04f81f3e94b8d23f5f047dcc901da957",
+  "app/version.txt": "2af887d92e91ef9570f50386c4a4d0d64969c51ea423e249a34f092808563a08",
   "app/video_safety.py": "092d8b03837bd7b95ff26ffd77591a0943882cd750ba40402fe8c8355604b5cb",
   "app/vinyl.py": "a91eb325a6dcc72f403cc9208a588f2a7906b9ce2c3b23df4e04f2844d9aff46",
   "app/visualizer.py": "dc4b9678dc60ceb394cb6b7fee308ae3b162d626c4660c08140ee8ac57d1b1ab",
@@ -495,8 +495,8 @@
   "setup/update.ps1": "8c06317b9383bd78316b91ab81edd8f7f02b0ddea11018cbf1d94d3b085faffb"
  },
  "launcher_sha256": "90216ff71360595859d58aef7753d9ae25a6892374f8c4c48f67a89704c6d395",
- "notes": "Обновили лаунчер и значки ECHOES для Windows. VLC и pip скачиваются параллельно, а FFmpeg для загрузчика и эффектов доустанавливается в фоне.",
- "sig": "aT73hozyltl/uEm5kHVp/2mpjT7ErP7SLwJtI0rouFusirznZNyB9LzaTa3jOD7B8YGz66e7ofDn8YnGSBjbBQ==",
- "ts": 1794918559,
- "version": "2026.11.17-2"
+ "notes": "Новый лаунчер, нота-клинок в Phantom и обновлённые значки Windows. Установка плеера завершается без ожидания FFmpeg, который докачивается в фоне.",
+ "sig": "1E7aeAN1IL4yjIPKdKruTUNnuTN+3c16FhqkIdVtxGtrA1szURxzY3AqVknTsI/prm5ea9Z0W6wzxHLxzxgTAw==",
+ "ts": 1794918718,
+ "version": "2026.11.17-3"
 }
