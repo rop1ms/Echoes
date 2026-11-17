@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from PyQt6 import sip
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QLockFile, QStandardPaths, qVersion
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QLockFile, QStandardPaths, qVersion
 from PyQt6.QtWidgets import QApplication, QWidget
 
 ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
@@ -43,7 +43,8 @@ class Job(QThread):
             def downloaded(done, total):
                 self.progress.emit(int(share * done / total) if total else -1, {'stage': 'progress.download'})
 
-            source = core.download_source(downloaded)
+            executable = sys.executable if getattr(sys, 'frozen', False) else None
+            source = core.download_source(downloaded, launcher=executable)
             self.progress.emit(share, {'stage': 'progress.unpack'})
             if mode == 'install':
                 args = ['-Auto', '-InstallDir', request['target'], '-NoLaunch']
@@ -55,16 +56,18 @@ class Job(QThread):
                 script = source / 'setup/install.ps1'
             else:
                 args = ['-Auto']
+                if (source / 'setup/launcher.sha256').is_file():
+                    args += ['-NoLaunch', '-InstallDir', request['target']]
                 script = source / 'setup/update.ps1'
             stage = 'progress.installing' if mode == 'install' else 'progress.updating'
 
             def line(text):
                 match = core.STEP_RE.search(text)
-                pct = -1
+                pct = None
                 if match:
                     step, total = map(int, match.groups()[:2])
                     pct = share + int((100 - share) * (step - 1) / max(1, total))
-                self.progress.emit(pct, {'stage': stage, 'line': text.strip()})
+                self.progress.emit(pct if pct is not None else -2, {'stage': stage, 'line': text.strip()})
 
             code = core.run_script(script, args, line)
             if code:
@@ -79,12 +82,14 @@ class Job(QThread):
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+    app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     app.setApplicationName('ECHOES Launcher')
     app.setOrganizationName('ECHOES')
     lock = QLockFile(str(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)) / 'echoes-native-launcher.lock'))
     if not lock.tryLock(100):
         return 0
     native = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+    assets = native if getattr(sys, 'frozen', False) else ROOT / 'app/assets'
     dll = ctypes.CDLL(str(native / 'echoes_launcher.dll'))
     dll.ela_qt_version.restype = ctypes.c_char_p
     if dll.ela_qt_version().decode() != qVersion():
@@ -98,7 +103,11 @@ def main():
     dll.ela_done.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p]
     target = core.discover()
     payload = {'target': str(target or ''), 'default': str(core.DEFAULT_DIR), 'version': core.version(target),
-               'accent': core.accent(), 'data': str(core.data_dir()), 'icon': str(native / 'icon.ico')}
+               'data': str(core.data_dir()),
+               'icon': str((native if getattr(sys, 'frozen', False) else ROOT / 'app') / 'icon.ico'),
+               'mark': str(assets / 'logo/echoes_mark.png'),
+               'display_font': str(assets / 'fonts/nick/UnifrakturMaguntia-Book.ttf'),
+               'ui_fonts': [str(assets / f'fonts/inter/Inter-{script}.ttf') for script in ('latin', 'cyrillic')]}
     encode = lambda value: json.dumps(value, ensure_ascii=False).encode('utf-8')
     pointer = dll.ela_new(encode(payload))
     window = sip.wrapinstance(pointer, QWidget)
@@ -106,7 +115,7 @@ def main():
 
     def refresh():
         nonlocal target
-        target = core.discover() or target
+        target = target if core.installation(target) else core.discover()
         dll.ela_state(pointer, encode({'target': str(target or ''), 'version': core.version(target)}))
 
     def action(raw):

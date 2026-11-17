@@ -11,6 +11,8 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
@@ -99,6 +101,38 @@ try:
     check(False, "подменённый архив отклонён")
 except RuntimeError as e:
     check("не совпали" in str(e), "подменённый архив отклонён: " + str(e)[:80])
+
+# The fast installer only reuses an EXE matching the signed package, and the
+# compact ZIP is still checked against that same signature.
+sys.path.insert(0, str(ROOT / "launcher"))
+# The launcher bundles psutil; the player's CI only exercises downloads here.
+with patch.dict(sys.modules, {"psutil": ModuleType("psutil")}):
+    import core as lc
+
+(tree / "app/main.py").write_text("print('hi')\n", "utf-8")
+(tree / "setup/install.ps1").write_text("Write-Host ok\n", "utf-8")
+launcher = tmp / "launcher.exe"
+launcher.write_bytes(b"test launcher")
+man["files"]["setup/install.ps1"] = rs.sha256((tree / "setup/install.ps1").read_bytes())
+signed = rs.sign(dict(man, launcher_sha256=rs.sha256(launcher.read_bytes())), seed)
+check(rs.verify(signed, pub), "SHA-256 лаунчера входит в подпись")
+compact_zip = zip_of(tree)
+
+
+def download_zip(url, destination, progress, cancel):
+    served["url"] = url
+    destination.write_bytes(compact_zip)
+
+
+with patch.object(lc, "release", return_value=signed), patch.object(lc, "_download_archive", download_zip):
+    src = lc.download_source(launcher=launcher)
+    check(served["url"].endswith("/ECHOES.App.zip"), "подходящий EXE позволяет скачать компактный архив")
+    check((src / "ECHOES Launcher.exe").read_bytes() == launcher.read_bytes(), "установщику передан проверенный EXE")
+    shutil.rmtree(src.parents[1])
+    launcher.write_bytes(b"older launcher")
+    src = lc.download_source(launcher=launcher)
+    check(served["url"].endswith("c" * 40), "старый EXE использует полный архив подписанного коммита")
+    shutil.rmtree(src.parents[1])
 
 # ── откат версии, которая дважды не запустилась ──
 import importlib

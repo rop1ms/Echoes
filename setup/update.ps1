@@ -7,7 +7,7 @@
     -Auto — запуск из самого ECHOES (кнопка «Обновить», версия с GitHub): без вопросов,
     в конце ECHOES открывается сам.
 #>
-param([switch]$Auto)
+param([switch]$Auto, [switch]$NoLaunch, [string]$InstallDir = "")
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
@@ -15,15 +15,17 @@ try { $Host.UI.RawUI.WindowTitle = 'ECHOES — обновление' } catch {}
 try { $Host.UI.RawUI.BackgroundColor = 'Black'; $Host.UI.RawUI.ForegroundColor = 'Gray' } catch {}
 Clear-Host
 
-$SRC_APP = Join-Path (Split-Path -Parent $PSScriptRoot) 'app'
+$SRC_ROOT = Split-Path -Parent $PSScriptRoot
+$SRC_APP = Join-Path $SRC_ROOT 'app'
+. (Join-Path $PSScriptRoot 'launcher.ps1')
 
 function Ok([string]$t)   { Write-Host "      √ $t" -ForegroundColor Green }
 function Info([string]$t) { Write-Host "      · $t" -ForegroundColor DarkGray }
 function Warn([string]$t) { Write-Host "      ! $t" -ForegroundColor Yellow }
-function Step([string]$t) { Write-Host ''; Write-Host "  » $t" -ForegroundColor White }
+function Step([int]$n, [string]$t) { Write-Host ""; Write-Host "  [$n/5] $t" -ForegroundColor White }
 function Done([int]$code) {
     Write-Host ''
-    if ($Auto) { Start-Sleep -Seconds 6; exit $code }
+    if ($Auto) { exit $code }
     Read-Host '  Нажмите Enter, чтобы закрыть' | Out-Null
     exit $code
 }
@@ -46,23 +48,27 @@ if (-not (Test-Path (Join-Path $SRC_APP 'main.py'))) {
 }
 
 # ── 1. где установлен ECHOES ─────────────────────────────────────────────
-Step 'Ищу установленный ECHOES'
-$cands = New-Object System.Collections.Generic.List[string]
-try {
-    $loc = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ECHOES' -ErrorAction Stop).InstallLocation
-    if ($loc) { $cands.Add($loc) }
-} catch {}
-try {
-    $ws = New-Object -ComObject WScript.Shell
-    foreach ($lnk in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES.lnk'),
-                       (Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES\ECHOES.lnk'))) {
-        if (Test-Path $lnk) {
-            $t = $ws.CreateShortcut($lnk).TargetPath            # ...\ECHOES\python\pythonw.exe
-            if ($t) { $cands.Add((Split-Path -Parent (Split-Path -Parent $t))) }
+Step 1 'Ищу установленный ECHOES'
+if ($InstallDir) {
+    $cands = @($InstallDir)
+} else {
+    $cands = New-Object System.Collections.Generic.List[string]
+    try {
+        $loc = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ECHOES' -ErrorAction Stop).InstallLocation
+        if ($loc) { $cands.Add($loc) }
+    } catch {}
+    try {
+        $ws = New-Object -ComObject WScript.Shell
+        foreach ($lnk in @((Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES.lnk'),
+                           (Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES\ECHOES.lnk'))) {
+            if (Test-Path $lnk) {
+                $t = $ws.CreateShortcut($lnk).TargetPath            # ...\ECHOES\python\pythonw.exe
+                if ($t) { $cands.Add((Split-Path -Parent (Split-Path -Parent $t))) }
+            }
         }
-    }
-} catch {}
-$cands.Add((Join-Path $env:LOCALAPPDATA 'Programs\ECHOES'))
+    } catch {}
+    $cands.Add((Join-Path $env:LOCALAPPDATA 'Programs\ECHOES'))
+}
 $InstallDir = $null
 foreach ($c in $cands) {
     if ($c -and (Test-Path (Join-Path $c 'app\main.py')) -and (Test-Path (Join-Path $c 'python\python.exe'))) {
@@ -75,6 +81,7 @@ if (-not $InstallDir) {
 $APP = Join-Path $InstallDir 'app'
 $PY  = Join-Path $InstallDir 'python\python.exe'
 Ok "найден: $InstallDir"
+$launcherSource = Get-EchoesLauncher $SRC_ROOT
 
 $verFile = Join-Path $APP 'version.txt'
 $oldVer = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { 'старая' }
@@ -83,8 +90,8 @@ $newVer = if (Test-Path $newVerFile) { (Get-Content $newVerFile -Raw).Trim() } e
 Info "версия: $oldVer  →  $newVer"
 
 # ── 2. закрыть плеер ─────────────────────────────────────────────────────
-Step 'Закрываю ECHOES, если он открыт'
-if ($Auto) { Start-Sleep -Seconds 3 }                    # ECHOES сам закрывается и сохраняет всё
+Step 2 'Закрываю ECHOES, если он открыт'
+if ($Auto -and -not $NoLaunch) { Start-Sleep -Seconds 3 }                    # ECHOES сам закрывается и сохраняет всё
 $killed = 0
 try {
     Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" -ErrorAction Stop |
@@ -99,7 +106,7 @@ try {
 if ($killed) { Start-Sleep -Milliseconds 1200; Ok 'закрыт' } else { Ok 'не был запущен' }
 
 # ── 3. заменить файлы ────────────────────────────────────────────────────
-Step 'Обновляю файлы программы'
+Step 3 'Обновляю файлы программы'
 # прошлая версия — в app.prev: если новая дважды не запустится, ECHOES сам вернёт её (app/boot_guard.py)
 $curVer = ''; $newVer = ''
 try { $curVer = (Get-Content -LiteralPath (Join-Path $APP 'version.txt') -Raw -ErrorAction Stop).Trim() } catch {}
@@ -156,11 +163,11 @@ if ($failed.Count) {
 Ok "обновлено файлов: $changed, без изменений: $same"
 
 # ── 4. загрузчик и библиотеки ────────────────────────────────────────────
-Step 'Обновляю загрузчик yt-dlp и поиск YouTube Music (1-2 минуты)'
+Step 4 'Обновляю загрузчик yt-dlp и поиск YouTube Music (1-2 минуты)'
 $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
 $constraints = Join-Path $PSScriptRoot 'constraints.txt'           # проверенные версии библиотек
 $cArgs = if (Test-Path -LiteralPath $constraints) { @('-c', $constraints) } else { @() }
-& $PY -m pip install --upgrade --prefer-binary --no-warn-script-location --disable-pip-version-check @cArgs `
+& $PY -m pip install --upgrade --prefer-binary --no-compile --no-warn-script-location --disable-pip-version-check @cArgs `
       --timeout 60 --retries 3 yt-dlp ytmusicapi syncedlyrics requests mutagen Pillow sounddevice pycryptodomex websockets av `
       winrt-runtime winrt-Windows.Foundation winrt-Windows.Foundation.Collections winrt-Windows.Media `
       winrt-Windows.Media.Playback winrt-Windows.Storage winrt-Windows.Storage.Streams 2>&1 | ForEach-Object {
@@ -179,9 +186,9 @@ $ErrorActionPreference = $old
 $qtOld = $true
 try { $qtOld = ([version]("$qt".Trim()) -lt [version]$needQt) } catch { $qtOld = $true }
 if ($qtOld) {
-    Step "Обновляю Qt интерфейса ($qt → $needQt+), это нужно для плавности (1-3 минуты)"
+    Info "Обновляю Qt интерфейса ($qt → $needQt+), это нужно для плавности (1-3 минуты)"
     $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    & $PY -m pip install --upgrade --prefer-binary --no-warn-script-location --disable-pip-version-check @cArgs `
+    & $PY -m pip install --upgrade --prefer-binary --no-compile --no-warn-script-location --disable-pip-version-check @cArgs `
           --timeout 120 --retries 3 PyQt6 "PyQt6-Qt6>=$needQt" 2>&1 | ForEach-Object {
         $l = "$_"
         if ($l -match '^Successfully installed (.+)') { Info "обновлено: $($Matches[1])" }
@@ -190,17 +197,24 @@ if ($qtOld) {
 }
 if ($pipCode -eq 0) { Ok 'готово' } else { Warn 'часть библиотек не обновилась (нет интернета?) — плеер всё равно обновлён' }
 
+Step 5 'Завершаю обновление'
+if ($launcherSource) {
+    Install-EchoesLauncher $launcherSource $InstallDir
+    try { Update-EchoesLauncherShortcuts $InstallDir }
+    catch { Warn "Не удалось обновить ярлыки: $($_.Exception.Message)" }
+}
+
 # ── готово ───────────────────────────────────────────────────────────────
 try {
     $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ECHOES'
-    if (Test-Path $key) { Set-ItemProperty -Path $key -Name DisplayVersion -Value $newVer -ErrorAction SilentlyContinue }
+    if ((Test-Path $key) -and (Get-ItemProperty -Path $key).InstallLocation -eq $InstallDir) { Set-ItemProperty -Path $key -Name DisplayVersion -Value $newVer -ErrorAction SilentlyContinue }
 } catch {}
 Write-Host ''
 Write-Host '  ╔══════════════════════════════════════════════╗' -ForegroundColor Green
 Write-Host "  ║   ECHOES ОБНОВЛЁН  ·  версия $($newVer.PadRight(16))║" -ForegroundColor Green
 Write-Host '  ╚══════════════════════════════════════════════╝' -ForegroundColor Green
 Write-Host ''
-$go = if ($Auto) { '' } else { Read-Host '   Запустить ECHOES? [Enter — да / n — нет]' }
+$go = if ($NoLaunch) { 'n' } elseif ($Auto) { '' } else { Read-Host '   Запустить ECHOES? [Enter — да / n — нет]' }
 if ($go -notmatch '^(n|н|no|нет)$') {
     Start-Process -FilePath (Join-Path $InstallDir 'python\pythonw.exe') -ArgumentList "`"$(Join-Path $APP 'main.py')`"" -WorkingDirectory $APP
 }

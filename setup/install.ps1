@@ -28,6 +28,9 @@ try {
 } catch {}
 Clear-Host
 
+. (Join-Path $PSScriptRoot 'launcher.ps1')
+. (Join-Path $PSScriptRoot 'downloads.ps1')
+
 $APP_NAME    = 'ECHOES'
 $APP_VERSION = '1.0'
 $SRC_ROOT    = Split-Path -Parent $PSScriptRoot          # папка ECHOES_Setup
@@ -46,11 +49,6 @@ $VLC_URLS = @(
     'https://download.videolan.org/pub/videolan/vlc/3.0.21/win64/vlc-3.0.21-win64.zip',
     'https://get.videolan.org/vlc/3.0.21/win64/vlc-3.0.21-win64.zip',
     'https://download.videolan.org/pub/videolan/vlc/3.0.20/win64/vlc-3.0.20-win64.zip'
-)
-$FFMPEG_URLS = @(
-    'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
-    'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
-    'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
 )
 # обязательные — без них плеер не запустится
 $PKG_CORE  = @('PyQt6', 'python-vlc', 'numpy', 'scipy', 'mutagen', 'requests')
@@ -127,67 +125,6 @@ function Fail([string]$msg) {
 
 # ═══════════════════════════════ утилиты ═══════════════════════════════ #
 
-function Get-File([string[]]$Urls, [string]$Dest) {
-    Add-Type -AssemblyName System.Net.Http
-    foreach ($u in $Urls) {
-        $hostName = ([Uri]$u).Host
-        for ($try = 1; $try -le 3; $try++) {
-            $client = $null; $in = $null; $out = $null
-            try {
-                Info "источник: $hostName$(if ($try -gt 1) { " (попытка $try)" })"
-                $h = New-Object System.Net.Http.HttpClientHandler
-                $h.AllowAutoRedirect = $true
-                $client = New-Object System.Net.Http.HttpClient($h)
-                $client.Timeout = [TimeSpan]::FromMinutes(40)
-                $client.DefaultRequestHeaders.UserAgent.ParseAdd('Mozilla/5.0 (Windows NT 10.0; Win64; x64) ECHOES-Setup/1.0')
-                $resp = $client.GetAsync($u, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-                if (-not $resp.IsSuccessStatusCode) { throw "сервер ответил $([int]$resp.StatusCode)" }
-                $total = $resp.Content.Headers.ContentLength
-                $in  = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-                $out = [IO.File]::Create($Dest)
-                $buf = New-Object byte[] 262144
-                [long]$done = 0
-                $sw = [Diagnostics.Stopwatch]::StartNew()
-                while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
-                    $out.Write($buf, 0, $n)
-                    $done += $n
-                    if ($sw.ElapsedMilliseconds -gt 150) { Show-Bar $done $total; $sw.Restart() }
-                }
-                Show-Bar $done $total
-                [Console]::WriteLine()
-                $out.Close(); $out = $null
-                if ($done -lt 4096) { throw 'получен пустой файл' }
-                if ($total -and $done -lt $total) { throw 'загрузка оборвалась' }
-                return $true
-            } catch {
-                [Console]::WriteLine()
-                Warn "не получилось: $($_.Exception.Message)"
-                if ($out) { try { $out.Close() } catch {} }
-                Remove-Item $Dest -Force -ErrorAction SilentlyContinue
-                if ($_.Exception.Message -match 'ответил 4\d\d') { break }   # файла там нет — сразу к следующему источнику
-                Start-Sleep -Seconds (2 * $try)
-            } finally {
-                if ($in) { try { $in.Close() } catch {} }
-                if ($client) { try { $client.Dispose() } catch {} }
-            }
-        }
-        # запасной способ (умеет редиректы https→http и системный прокси)
-        try {
-            Info "пробую другим способом: $hostName"
-            $wc = New-Object Net.WebClient
-            $wc.Headers.Add('User-Agent', 'Mozilla/5.0 ECHOES-Setup/1.0')
-            $wc.Proxy = [Net.WebRequest]::GetSystemWebProxy()
-            $wc.Proxy.Credentials = [Net.CredentialCache]::DefaultCredentials
-            $wc.DownloadFile($u, $Dest)
-            if ((Get-Item $Dest).Length -gt 4096) { Ok 'скачано'; return $true }
-        } catch {
-            Warn "не получилось: $($_.Exception.Message)"
-            Remove-Item $Dest -Force -ErrorAction SilentlyContinue
-        }
-    }
-    return $false
-}
-
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Expand-Zip([string]$Zip, [string]$To) {
@@ -257,7 +194,7 @@ if ($ans -and $ans.Trim()) {
 }
 
 try {
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    $InstallDir = (New-Item -ItemType Directory -Path $InstallDir -Force).FullName
 } catch {
     Fail "Не удалось создать папку $InstallDir. Выберите другую (например, на диске D:)."
 }
@@ -280,6 +217,30 @@ try {
     $freeGB = [Math]::Round($drive.Free / 1GB, 1)
     if ($freeGB -lt 1.2) { Warn "на диске $($drive.Name): свободно всего $freeGB ГБ — может не хватить" }
 } catch {}
+
+$launcherSource = Get-EchoesLauncher $SRC_ROOT
+$vlcZip = Join-Path $TMP 'vlc.zip'
+$vlcDownload = $null
+$pipDownload = $null
+$pipBootstrap = Join-Path $TMP 'get-pip.py'
+if (-not (Test-Path $PY)) {
+    $pipDownload = Start-EchoesDownload $GETPIP_URLS $pipBootstrap
+}
+if (-not (Test-Path (Join-Path $VLC_DIR 'libvlc.dll'))) {
+    $vlcDownload = Start-EchoesDownload $VLC_URLS $vlcZip
+}
+
+$ffmpegStarted = $false
+if (-not ((Test-Path (Join-Path $FF_DIR 'ffmpeg.exe')) -and (Test-Path (Join-Path $FF_DIR 'ffprobe.exe')))) {
+    try {
+        $helper = Join-Path $PSScriptRoot 'ffmpeg.ps1'
+        Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $helper),
+            '-InstallDir', ('"{0}"' -f $InstallDir)
+        )
+        $ffmpegStarted = $true
+    } catch { Warn 'не удалось запустить фоновую установку FFmpeg' }
+}
 
 # ── 1. файлы плеера ───────────────────────────────────────────────────────
 Step 1 'Копирую файлы плеера'
@@ -325,49 +286,55 @@ $code = Invoke-Native $PY @('-m', 'pip', '--version')
 if ($code -eq 0) {
     Ok 'уже есть'
 } else {
-    $gp = Join-Path $TMP 'get-pip.py'
-    if (-not (Get-File $GETPIP_URLS $gp)) { Fail 'Не удалось скачать установщик pip.' }
-    $code = Invoke-Native $PY @($gp, '--no-warn-script-location', '--disable-pip-version-check')
+    $gp = $pipBootstrap
+    if (-not (Receive-EchoesDownload $pipDownload $GETPIP_URLS $gp)) { Fail 'Не удалось скачать установщик pip.' }
+    $code = Invoke-Native $PY @($gp, '--no-compile', '--no-warn-script-location', '--disable-pip-version-check')
     if ($code -ne 0) { Fail 'pip не установился. Подробности — в журнале.' }
     Ok 'pip установлен'
 }
 
 # ── 4. библиотеки ─────────────────────────────────────────────────────────
-Step 4 'Библиотеки Python (это самый долгий шаг — 2-10 минут)'
-$pipBase = @('-m', 'pip', 'install', '--upgrade', '--prefer-binary', '--no-warn-script-location',
+Step 4 'Устанавливаю библиотеки Python'
+$pipBase = @('-m', 'pip', 'install', '--upgrade', '--prefer-binary', '--no-compile', '--no-warn-script-location',
              '--disable-pip-version-check', '--timeout', '60', '--retries', '5')
 # проверенные версии библиотек (constraints.txt): у всех одинаковая сборка, новая версия библиотеки не сломает установку
 $constraints = Join-Path $PSScriptRoot 'constraints.txt'
 if (Test-Path -LiteralPath $constraints) { $pipBase += @('-c', $constraints) }
-$ok = $false
-for ($i = 1; $i -le 3 -and -not $ok; $i++) {
-    if ($i -gt 1) { Warn "ещё одна попытка ($i/3)…"; Start-Sleep 3 }
-    $ok = ((Invoke-Native $PY ($pipBase + $PKG_CORE) -ShowPip) -eq 0)
+# Resolve the core and feature dependencies in one pass. If an optional wheel is
+# unavailable, still install a working player and try the other features separately.
+if ((Invoke-Native $PY ($pipBase + $PKG_CORE + $PKG_EXTRA) -ShowPip) -eq 0) {
+    Ok 'Библиотеки установлены'
+} else {
+    $ok = $false
+    for ($i = 1; $i -le 3 -and -not $ok; $i++) {
+        if ($i -gt 1) { Warn "ещё одна попытка ($i/3)…"; Start-Sleep 3 }
+        $ok = ((Invoke-Native $PY ($pipBase + $PKG_CORE) -ShowPip) -eq 0)
+    }
+    if (-not $ok) { Fail 'Не удалось установить основные библиотеки (PyQt6, numpy, …).' }
+    Ok 'основные библиотеки готовы'
+
+    $failed = @()
+    if ((Invoke-Native $PY ($pipBase + $PKG_EXTRA) -ShowPip) -ne 0) {
+        foreach ($p in $PKG_EXTRA) {
+            if ((Invoke-Native $PY ($pipBase + @($p)) -ShowPip) -ne 0) { $failed += $p }
+        }
+    }
+    if ($failed.Count) { Warn "не установились: $($failed -join ', ') — эти функции будут недоступны" }
+    else { Ok 'тексты, загрузчик, онлайн-поиск, Discord — готовы' }
 }
-if (-not $ok) { Fail 'Не удалось установить основные библиотеки (PyQt6, numpy, …).' }
-Ok 'основные библиотеки готовы'
 
 if (-not $NoSpotify) {
     Info 'Spotify-загрузчик (необязательно)…'
     if ((Invoke-Native $PY ($pipBase + $PKG_SPOT) -ShowPip) -ne 0) { Warn 'spotdl не встал — импорт из Spotify всё равно работает через встроенную утилиту' }
 }
 
-$failed = @()
-if ((Invoke-Native $PY ($pipBase + $PKG_EXTRA) -ShowPip) -ne 0) {
-    foreach ($p in $PKG_EXTRA) {
-        if ((Invoke-Native $PY ($pipBase + @($p)) -ShowPip) -ne 0) { $failed += $p }
-    }
-}
-if ($failed.Count) { Warn "не установились: $($failed -join ', ') — эти функции будут недоступны" }
-else { Ok 'тексты, загрузчик, онлайн-поиск, Discord — готовы' }
-
 # ── 5. VLC ────────────────────────────────────────────────────────────────
 Step 5 'VLC — движок воспроизведения'
 if (Test-Path (Join-Path $VLC_DIR 'libvlc.dll')) {
     Ok 'уже установлен'
 } else {
-    $zip = Join-Path $TMP 'vlc.zip'
-    if (-not (Get-File $VLC_URLS $zip)) {
+    $zip = $vlcZip
+    if (-not (Receive-EchoesDownload $vlcDownload $VLC_URLS $zip)) {
         if (Test-Path 'C:\Program Files\VideoLAN\VLC\libvlc.dll') {
             Warn 'скачать не вышло, но на компьютере уже есть VLC — плеер возьмёт его'
         } else {
@@ -388,34 +355,16 @@ if (Test-Path (Join-Path $VLC_DIR 'libvlc.dll')) {
 }
 # кэш плагинов: без plugins.dat VLC при каждом запуске плеера грузит все ~365 плагинов (медленный старт)
 $cacheGen = Join-Path $VLC_DIR 'vlc-cache-gen.exe'
-if (Test-Path $cacheGen) {
+if ((Test-Path $cacheGen) -and -not (Test-Path (Join-Path $VLC_DIR 'plugins\plugins.dat'))) {
     & $cacheGen (Join-Path $VLC_DIR 'plugins') 2>&1 | Out-Null
 }
 
-# ── 6. ffmpeg ─────────────────────────────────────────────────────────────
-Step 6 'ffmpeg — для скачивания музыки и эффектов'
-if (Test-Path (Join-Path $FF_DIR 'ffmpeg.exe')) {
-    Ok 'уже установлен'
-} else {
-    $zip = Join-Path $TMP 'ffmpeg.zip'
-    if (-not (Get-File $FFMPEG_URLS $zip)) {
-        Warn 'ffmpeg скачать не удалось — плеер работает, но скачивание треков и Slowed+Reverb будут недоступны.'
-        Warn 'Запустите установщик позже ещё раз, чтобы докачать.'
-    } else {
-        Info 'распаковываю…'
-        New-Item -ItemType Directory -Path $FF_DIR -Force | Out-Null
-        $za = [IO.Compression.ZipFile]::OpenRead($zip)
-        try {
-            foreach ($e in $za.Entries) {
-                if ($e.FullName -match '(^|/)bin/(ffmpeg|ffprobe)\.exe$') {
-                    [IO.Compression.ZipFileExtensions]::ExtractToFile($e, (Join-Path $FF_DIR $e.Name), $true)
-                }
-            }
-        } finally { $za.Dispose() }
-        Remove-Item $zip -Force -ErrorAction SilentlyContinue
-        if (Test-Path (Join-Path $FF_DIR 'ffmpeg.exe')) { Ok 'ffmpeg готов' }
-        else { Warn 'в архиве не нашлось ffmpeg.exe — запустите установщик ещё раз' }
-    }
+# FFmpeg is used by optional features; playback is ready once VLC and Python are installed.
+Step 6 'ffmpeg — подготавливаю загрузчик'
+if ((Test-Path (Join-Path $FF_DIR 'ffmpeg.exe')) -and (Test-Path (Join-Path $FF_DIR 'ffprobe.exe'))) {
+    Ok 'FFmpeg'
+} elseif ($ffmpegStarted) {
+    Info 'загрузчик и эффекты будут готовы после фоновой установки FFmpeg'
 }
 
 # ── 7. ярлыки ─────────────────────────────────────────────────────────────
@@ -425,15 +374,16 @@ $ico  = Join-Path $APP_DIR 'icon.ico'
 $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $uninstArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'uninstall.ps1')`""
 # GUI launcher is optional for older distributions; keep the direct player shortcut too.
-$launcherSource = Join-Path $SRC_ROOT 'ECHOES Launcher.exe'
 $launcherTarget = Join-Path $InstallDir 'ECHOES Launcher.exe'
-if (Test-Path -LiteralPath $launcherSource) {
+if ($launcherSource) {
     try {
-        Copy-Item -LiteralPath $launcherSource -Destination $launcherTarget -Force
+        Install-EchoesLauncher $launcherSource $InstallDir
         if (-not $NoDesktop) { New-Shortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $ico 'ECHOES — запуск и обновления' }
-        $launcherMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES'
-        New-Item -ItemType Directory -Path $launcherMenu -Force | Out-Null
-        New-Shortcut (Join-Path $launcherMenu 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $ico 'ECHOES — запуск и обновления'
+        if (-not $NoStartMenu) {
+            $launcherMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'ECHOES'
+            New-Item -ItemType Directory -Path $launcherMenu -Force | Out-Null
+            New-Shortcut (Join-Path $launcherMenu 'ECHOES Launcher.lnk') $launcherTarget '' $InstallDir $ico 'ECHOES — запуск и обновления'
+        }
     } catch { Warn "лаунчер не скопирован: $($_.Exception.Message)" }
 }
 if (-not $NoDesktop) { try {

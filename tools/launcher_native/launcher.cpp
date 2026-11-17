@@ -15,11 +15,12 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QMenu>
 #include <QtGui/QPainter>
-#include <QtGui/QPainterPath>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QIcon>
 #include <QtGui/QFontDatabase>
+#include <QtGui/QImage>
+#include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QSettings>
@@ -28,11 +29,9 @@
 #include <QtCore/QDir>
 #include <QtCore/QUrl>
 #include <QtCore/QRegularExpression>
-#include <QtCore/QStandardPaths>
 #include <QtCore/QStorageInfo>
-#include <QtCore/QTimer>
-#include <cmath>
 #include <vector>
+#include <cmath>
 
 #define API extern "C" __declspec(dllexport)
 using Callback = void (*)(const char *);
@@ -40,9 +39,7 @@ static Callback callback = nullptr;
 
 struct Text { const char *key; const char *en; const char *ru; };
 static const Text texts[] = {
-    {"brand.tagline", "My music.\nMy rules.", "Моя музыка.\nМои правила."},
-    {"brand.caption", "YOUR NEXT CHAPTER", "ТВОЯ НОВАЯ ГЛАВА"},
-    {"brand.detail", "Music, discoveries and a world of your own.", "Музыка, открытия и мир, который принадлежит тебе."},
+    {"brand.platform", "Music player for Windows", "Музыкальный плеер для Windows"},
     {"header.launcher", "Launcher", "Лаунчер"},
     {"language.label", "Interface language", "Язык интерфейса"},
     {"language.manage", "Translation files", "Файлы перевода"},
@@ -51,8 +48,8 @@ static const Text texts[] = {
     {"language.invalid", "This translation file is invalid. Use the English template and keep its placeholders unchanged.", "Неверный файл перевода. Используйте английский шаблон и сохраните его подстановки без изменений."},
     {"language.loaded", "Translation loaded. Missing entries use English.", "Перевод загружен. Пропущенные строки отображаются на английском."},
     {"language.save_error", "The translation file could not be saved.", "Не удалось сохранить файл перевода."},
-    {"home.ready", "Your music is waiting.", "Музыка уже ждёт."},
-    {"home.subtitle", "A new session, a familiar feeling. Pick up where you left off.", "Новый сеанс, знакомое чувство. Продолжай с того места, где остановился."},
+    {"home.ready", "Play music.", "Слушать музыку."},
+    {"home.location", "INSTALL LOCATION", "ПАПКА УСТАНОВКИ"},
     {"home.installed", "Installed · {version}", "Установлена · {version}"},
     {"home.new", "Available · {version}", "Доступна · {version}"},
     {"home.latest", "You're up to date.", "Установлена последняя версия."},
@@ -68,30 +65,29 @@ static const Text texts[] = {
     {"button.back", "Back", "Назад"},
     {"button.change", "Change…", "Изменить…"},
     {"button.install", "Download & install", "Скачать и установить"},
+    {"progress.complete", "{percent}% complete", "Готово {percent}%"},
     {"button.details", "Installation details", "Подробности установки"},
     {"button.home", "Back to launcher", "К лаунчеру"},
-    {"setup.title", "Make room for your music.", "Место для твоей музыки."},
-    {"setup.subtitle", "Install ECHOES with its own Python, audio engine and tools. No administrator rights needed.", "Установим ECHOES вместе с отдельным Python, звуковым движком и инструментами. Права администратора не нужны."},
+    {"setup.title", "Install ECHOES.", "Установить ECHOES."},
+    {"setup.subtitle", "Installs for your Windows account. Administrator access is unnecessary.", "Установка для вашего профиля Windows. Права администратора не требуются."},
     {"setup.location", "INSTALL LOCATION", "ПАПКА УСТАНОВКИ"},
     {"setup.choose", "Choose an installation folder", "Выберите папку установки"},
     {"setup.space", "{space} GB free · around 1 GB needed", "Свободно {space} ГБ · потребуется около 1 ГБ"},
     {"setup.space_unknown", "Around 1 GB of free space needed", "Потребуется около 1 ГБ свободного места"},
-    {"setup.options", "MAKE IT YOURS", "НАСТРОИТЬ ПОД СЕБЯ"},
+    {"setup.options", "SETUP OPTIONS", "ПАРАМЕТРЫ УСТАНОВКИ"},
     {"option.desktop", "Desktop shortcut", "Ярлык на рабочем столе"},
     {"option.menu", "Start menu shortcuts", "Ярлыки в меню «Пуск»"},
-    {"option.spotify", "Spotify download helper (spotdl)", "Загрузчик из Spotify (spotdl)"},
+    {"option.spotify", "Additional Spotify downloader (spotdl)", "Дополнительный загрузчик Spotify (spotdl)"},
     {"option.autostart", "Open ECHOES when Windows starts", "Запускать ECHOES вместе с Windows"},
     {"option.launch", "Open ECHOES after installation", "Открыть ECHOES после установки"},
-    {"progress.install", "Setting the stage.", "Готовим всё к прослушиванию."},
-    {"progress.update", "Something new is on the way.", "Новое уже близко."},
-    {"progress.note", "Your library and settings stay with you.", "Медиатека и настройки остаются с тобой."},
+    {"progress.install", "Installing ECHOES.", "Установка ECHOES."},
+    {"progress.update", "Updating ECHOES.", "Обновление ECHOES."},
     {"progress.download", "Downloading the latest ECHOES from GitHub…", "Скачиваем последнюю версию ECHOES с GitHub…"},
     {"progress.unpack", "Preparing the installation files…", "Подготавливаем файлы установки…"},
     {"progress.installing", "Installing ECHOES and its components…", "Устанавливаем ECHOES и его компоненты…"},
     {"progress.updating", "Updating ECHOES and its components…", "Обновляем ECHOES и его компоненты…"},
-    {"done.install", "You're all set.", "Всё готово."},
-    {"done.update", "Fresh sound. Same home.", "Новое звучание. Всё на месте."},
-    {"done.subtitle", "ECHOES is ready. Your next favourite is out there.", "ECHOES готов. Твоя следующая любимая песня уже ждёт."},
+    {"done.install", "ECHOES is installed.", "ECHOES установлен."},
+    {"done.update", "ECHOES is updated.", "ECHOES обновлён."},
     {"error.title", "Something went wrong", "Что-то пошло не так"},
     {"error.backend", "The operation could not be completed. Check your connection and the installation details.", "Не удалось завершить действие. Проверьте интернет и подробности установки."},
     {"error.running", "ECHOES is already open. Look for its window or the tray icon.", "ECHOES уже открыт. Найдите его окно или значок в трее."},
@@ -138,44 +134,70 @@ static bool parsePack(const QByteArray &bytes, QJsonObject &out, QString &name) 
     return !out.isEmpty();
 }
 
-class Launcher;
 class Brand final : public QWidget {
 public:
-    QString caption, tagline, detail;
-    QColor accent;
-    explicit Brand(QColor color, QWidget *parent = nullptr): QWidget(parent), accent(color) {
-        setMinimumWidth(310); setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    QString platform;
+    Brand(const QString &markFile, const QString &displayFamily, QWidget *parent)
+        : QWidget(parent), displayFamily(displayFamily) {
+        setMinimumWidth(360);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+        QImage mask(markFile);
+        if (mask.isNull()) return;
+        mask = mask.scaledToWidth(640, Qt::SmoothTransformation).convertToFormat(QImage::Format_ARGB32);
+        steel = QImage(mask.size(), QImage::Format_ARGB32);
+        for (int y = 0; y < mask.height(); ++y) {
+            auto *row = reinterpret_cast<QRgb *>(steel.scanLine(y));
+            const auto *alpha = reinterpret_cast<const QRgb *>(mask.constScanLine(y));
+            for (int x = 0; x < mask.width(); ++x) {
+                const double u = double(x) / mask.width(), v = double(y) / mask.height();
+                const double reflection = .68 + .23 * std::sin(21 * u - 9 * v) + .12 * std::sin(47 * u + 31 * v);
+                const int grain = int((quint32(x) * 1664525u ^ quint32(y) * 1013904223u) % 29u) - 14;
+                const int tone = qBound(40, int(255 * reflection) + grain, 255);
+                row[x] = qRgba(tone, tone, tone, qAlpha(alpha[x]));
+            }
+        }
     }
 protected:
     void paintEvent(QPaintEvent *) override {
-        QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
-        QPainterPath clip; clip.addRoundedRect(QRectF(rect()), 24, 24);p.setClipPath(clip);
-        p.fillRect(rect(), QColor("#0c1018"));
-        for (int i=0; i<3; ++i) {
-            QColor c=i==0 ? accent : i==1 ? QColor("#7959f7") : QColor("#34c5b4");
-            QRadialGradient g(QPointF(width() * (i==0?.05:i==1?.95:.5), height() * (i==0?.2:i==1?.65:.9)), height()*.75);
-            c.setAlpha(115);g.setColorAt(0,c);c.setAlpha(0);g.setColorAt(1,c);p.fillRect(rect(),g);
-        }
-        p.setPen(QPen(QColor(255,255,255,24), 1));
-        for (int i=0;i<5;++i) p.drawEllipse(QPointF(width()*.75, height()*.31), 68+i*28, 68+i*28);
-        p.setPen(Qt::NoPen);p.setBrush(QColor(255,255,255,235));
-        QPainterPath star;
-        const QPointF center(44,49);
-        for(int i=0;i<16;++i) {
-            const double a=i*3.141592653589793/8., r=i%2 ? 7.5:18.;
-            QPointF v=center+QPointF(std::cos(a)*r,std::sin(a)*r);
-            i?star.lineTo(v):star.moveTo(v);
-        }
-        star.closeSubpath();p.drawPath(star);
-        QFont font("Segoe UI");font.setPixelSize(20);font.setWeight(QFont::Black);font.setLetterSpacing(QFont::AbsoluteSpacing,4);
-        p.setFont(font);p.setPen(Qt::white);p.drawText(QRectF(76,29,width()-96,40),Qt::AlignVCenter,"ECHOES");
-        font.setPixelSize(11);font.setWeight(QFont::DemiBold);font.setLetterSpacing(QFont::AbsoluteSpacing,2);p.setFont(font);
-        p.setPen(QColor(255,255,255,140));p.drawText(QRectF(28,height()-265,width()-56,28),Qt::AlignVCenter,caption);
-        font.setPixelSize(36);font.setWeight(QFont::Bold);font.setLetterSpacing(QFont::AbsoluteSpacing,0);p.setFont(font);p.setPen(Qt::white);
-        p.drawText(QRectF(28,height()-220,width()-56,128),Qt::AlignTop|Qt::TextWordWrap,tagline);
-        font.setPixelSize(13);font.setWeight(QFont::Normal);p.setFont(font);p.setPen(QColor(255,255,255,165));
-        p.drawText(QRectF(28,height()-77,width()-56,56),Qt::AlignTop|Qt::TextWordWrap,detail);
+        QPainter painter(this);
+        painter.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+        const QRectF frame = QRectF(rect()).adjusted(28, 26, -28, -26);
+        QRadialGradient light(QPointF(width() * .56, height() * .40), height() * .67);
+        light.setColorAt(0, QColor("#242422"));
+        light.setColorAt(.61, QColor("#121212"));
+        light.setColorAt(1, QColor("#090909"));
+        painter.fillRect(rect(), light);
+
+        painter.setPen(QColor("#393835"));
+        painter.drawRect(frame);
+        const double baseline = frame.bottom() - 40;
+        painter.drawLine(QPointF(frame.left(), baseline), QPointF(frame.right(), baseline));
+
+        const double size = qMin(frame.width() - 25, frame.height() * .65);
+        const QRectF art(frame.center().x() - size / 2, frame.top() + frame.height() * .075, size, size);
+        const QRectF outline = art.adjusted(23, 19, -23, -19);
+        painter.setPen(QColor("#2d2c2a"));
+        painter.drawEllipse(outline);
+        painter.drawLine(QPointF(art.center().x(), frame.top()), QPointF(art.center().x(), outline.top()));
+        painter.drawImage(art, steel);
+
+        QFont display(displayFamily);
+        display.setPixelSize(qRound(qMin(frame.width() * .24, frame.height() * .17)));
+        painter.setPen(QColor("#ece9e0"));
+        painter.setFont(display);
+        const auto wordmark = QRectF(frame.left(), art.bottom() - 10, frame.width(), baseline - art.bottom() + 10);
+        painter.drawText(wordmark, Qt::AlignCenter, "Echoes");
+
+        QFont caption("Consolas");
+        caption.setPixelSize(12);
+        painter.setFont(caption);
+        painter.setPen(QColor("#afada5"));
+        painter.drawText(QRectF(frame.left() + 12, baseline, frame.width() - 24, 40), Qt::AlignCenter, platform);
     }
+private:
+    QString displayFamily;
+    QImage steel;
 };
 
 class Launcher final : public QWidget {
@@ -183,24 +205,39 @@ public:
     explicit Launcher(const QJsonObject &state): QWidget(nullptr),
         store(state.contains("settings_path") ? state["settings_path"].toString() : QString("HKEY_CURRENT_USER\\Software\\ECHOES\\Launcher"),
               state.contains("settings_path") ? QSettings::IniFormat : QSettings::NativeFormat) {
-        const QString fontRoot = qEnvironmentVariable("WINDIR", "C:/Windows") + "/Fonts/";
-        for(const auto &file : {"segoeui.ttf", "segoeuib.ttf", "seguisym.ttf"})QFontDatabase::addApplicationFont(fontRoot+file);
-        QApplication::setFont(QFont("Segoe UI",10));
-        setObjectName("LauncherRoot");setWindowTitle("ECHOES Launcher");resize(1060,690);setMinimumSize(980,650);
+        for (const auto &file : state["ui_fonts"].toArray())
+            QFontDatabase::addApplicationFont(file.toString());
+        const int displayId = QFontDatabase::addApplicationFont(state["display_font"].toString());
+        const QString displayFamily = QFontDatabase::applicationFontFamilies(displayId).value(0, "Georgia");
+        QApplication::setFont(QFont("Inter", 10));
+        setObjectName("LauncherRoot");
+        setWindowTitle("ECHOES Launcher");
+        resize(1060, 680);
+        setMinimumSize(930, 610);
         target=state["target"].toString();version=state["version"].toString();dataPath=state["data"].toString();
         if(target.isEmpty())target=store.value("installation",state["default"].toString()).toString();
-        accent=QColor(state["accent"].toString("#ffdb1a"));
-        if(!accent.isValid())accent=QColor("#ffdb1a");
         setWindowIcon(QIcon(state["icon"].toString()));
         language=store.value("language","en").toString();
         QJsonObject loaded;QString packName;
         if(parsePack(store.value("translation_pack").toByteArray(),loaded,packName)){custom=loaded;customName=packName;}
         if(language!="ru"&&language!="custom")language="en";
         if(language=="custom"&&custom.isEmpty())language="en";
-        auto root=new QHBoxLayout(this);root->setContentsMargins(16,16,16,16);root->setSpacing(14);
-        brand=new Brand(accent,this);root->addWidget(brand,4);
-        auto right=new QWidget(this);auto column=new QVBoxLayout(right);column->setContentsMargins(10,4,8,8);column->setSpacing(20);root->addWidget(right,6);
-        auto header=new QHBoxLayout;launcherLabel=new QLabel;launcherLabel->setObjectName("Eyebrow");header->addWidget(launcherLabel);header->addStretch();
+        auto root = new QHBoxLayout(this);
+        root->setContentsMargins(0, 0, 0, 0);
+        root->setSpacing(0);
+        brand = new Brand(state["mark"].toString(), displayFamily, this);
+        root->addWidget(brand, 1);
+        auto right = new QWidget(this);
+        right->setObjectName("ControlPanel");
+        auto column = new QVBoxLayout(right);
+        column->setContentsMargins(34, 25, 34, 28);
+        column->setSpacing(22);
+        root->addWidget(right, 1);
+        auto header = new QHBoxLayout;
+        launcherLabel = new QLabel;
+        launcherLabel->setObjectName("Eyebrow");
+        header->addWidget(launcherLabel);
+        header->addStretch();
         languages=new QComboBox;languages->setObjectName("Language");languages->setMinimumWidth(128);languages->addItem("English","en");languages->addItem(QString::fromUtf8("Русский"),"ru");
         if(!custom.isEmpty())languages->addItem(customName,"custom");
         languages->setCurrentIndex(languages->findData(language));header->addWidget(languages);
@@ -210,32 +247,33 @@ public:
         for(auto l:findChildren<QLabel*>())l->setTextFormat(Qt::PlainText);
         connect(languages,&QComboBox::currentIndexChanged,this,[this](int){language=languages->currentData().toString();store.setValue("language",language);applyText();});
         connect(languageFiles,&QPushButton::clicked,this,[this]{QMenu menu;auto load=menu.addAction(tr("language.import"));auto save=menu.addAction(tr("language.export"));auto action=menu.exec(languageFiles->mapToGlobal(QPoint(0,languageFiles->height())));if(action==load)importPack();else if(action==save)exportPack();});
-        setStyleSheet(QString(R"(
-            QWidget#LauncherRoot { background:#090b10; color:#eef1f7; }
-            QLabel { color:#e9edf5; background:transparent; }
-            QLabel#Title { font-size:29px; font-weight:750; }
-            QLabel#Sub { color:#929eaf; font-size:13px; }
-            QLabel#Eyebrow { color:#8391a6; font-size:11px; font-weight:700; }
-            QLabel#Badge { border:1px solid #303a4a; border-radius:12px; padding:5px 10px; font-size:11px; color:#c7d2df; }
-            QPushButton { background:#161c26; color:#edf2fa; border:1px solid #2a3443; border-radius:13px; padding:10px 16px; font-weight:600; }
-            QPushButton:hover { background:#212c3a; border-color:#46566d; }
-            QPushButton:disabled { background:#11151c; color:#596577; border-color:#202632; }
-            QPushButton#Primary { background:%1; color:#090b10; border:none; font-size:15px; font-weight:750; }
-            QPushButton#Primary:hover { background:%2; }
-            QPushButton#Ghost { background:transparent; padding:7px 9px; font-size:11px; }
-            QPushButton#IconButton { padding:0; border-radius:10px; font-size:22px; }
-            QComboBox { color:#dce6f3; background:#141b25; border:1px solid #2a3443; border-radius:10px; padding:8px 12px; }
-            QComboBox QAbstractItemView { background:#151c26; color:#eef2f8; selection-background-color:#334056; }
-            QLineEdit { color:#ccd7e6; background:#101720; border:1px solid #2a3546; border-radius:10px; padding:10px; }
-            QCheckBox { color:#c8d1df; spacing:10px; font-size:13px; }
-            QCheckBox::indicator { width:16px; height:16px; border:1px solid #48566b; border-radius:5px; background:#121924; }
-            QCheckBox::indicator:checked { background:%1; border-color:%1; }
-            QProgressBar { border:none; border-radius:4px; background:#192331; height:8px; }
-            QProgressBar::chunk { background:%1; border-radius:4px; }
-            QPlainTextEdit { color:#c1cddd; background:#0b1119; border:1px solid #273345; border-radius:10px; font-size:11px; }
-            QMenu { background:#151c26; color:#eef2f8; border:1px solid #354156; padding:6px; }
-            QMenu::item { padding:8px 14px; } QMenu::item:selected { background:#334056; }
-        )").arg(accent.name(),accent.lighter(115).name()));
+        setStyleSheet(R"(
+            QWidget#LauncherRoot { background:#090909; color:#eae7df; }
+            QWidget#ControlPanel { background:#111111; border-left:1px solid #353431; }
+            QLabel { color:#eeebe3; background:transparent; }
+            QLabel#Title { font-size:37px; font-weight:800; }
+            QLabel#Sub { color:#b4b1a9; font-size:13px; }
+            QLabel#Eyebrow { color:#bcb8ae; font-family:Consolas; font-size:12px; font-weight:700; }
+            QLabel#Badge { border:1px solid #4f4d47; padding:6px 9px; font-family:Consolas; font-size:12px; }
+            QPushButton { background:#181818; color:#eae7df; border:1px solid #484641; padding:8px 14px; font-weight:600; }
+            QPushButton:hover { background:#262522; border-color:#959084; }
+            QPushButton:focus, QComboBox:focus, QCheckBox:focus { border:1px solid #eeeae1; }
+            QPushButton:disabled { background:#151515; color:#77736d; border-color:#2e2d2a; }
+            QPushButton#Primary { background:#ece9e0; color:#111111; border:1px solid #ece9e0; font-size:15px; font-weight:800; }
+            QPushButton#Primary:hover { background:#ffffff; }
+            QPushButton#Primary:focus { border:2px solid #817b6d; }
+            QPushButton#Ghost { background:transparent; padding:6px 9px; font-size:12px; }
+            QPushButton#Ghost:hover { background:#262522; }
+            QPushButton#IconButton { padding:0; font-size:20px; }
+            QComboBox, QLineEdit { color:#eae7df; background:#181818; border:1px solid #484641; padding:7px 10px; }
+            QComboBox QAbstractItemView { background:#181818; color:#eeeae1; selection-background-color:#3d3b36; }
+            QCheckBox { color:#e0ddd3; spacing:10px; font-size:13px; }
+            QProgressBar { border:none; background:#363530; height:6px; }
+            QProgressBar::chunk { background:#eeeae1; }
+            QPlainTextEdit { color:#c4c0b5; background:#0b0b0b; border:1px solid #484641; font-family:Consolas; font-size:12px; }
+            QMenu { background:#181818; color:#eeeae1; border:1px solid #484641; padding:4px; }
+            QMenu::item { padding:8px 14px; } QMenu::item:selected { background:#3d3b36; }
+        )");
         applyText();pages->setCurrentWidget(version.isEmpty()?setup:home);
     }
 
@@ -247,19 +285,20 @@ public:
     QString formatted(const QString &key) const {return tr(key).replace("{version}",version).replace("{path}",target);}
     QLabel *label(const char *key, const char *name="Sub") {auto l=new QLabel;l->setObjectName(name);l->setWordWrap(true);labels.append({l,key});return l;}
     QPushButton *button(const char *key,const char *name="",QWidget *parent=nullptr){auto b=new QPushButton(parent);b->setObjectName(name);buttons.append({b,key});return b;}
-    QVBoxLayout *page(QWidget *&w){w=new QWidget;pages->addWidget(w);auto v=new QVBoxLayout(w);v->setContentsMargins(2,4,2,0);v->setSpacing(15);return v;}
+    QVBoxLayout *page(QWidget *&w){w=new QWidget;pages->addWidget(w);auto v=new QVBoxLayout(w);v->setContentsMargins(0,9,0,0);v->setSpacing(14);return v;}
     void buildHome(){
-        auto v=page(home);v->addSpacing(12);v->addWidget(label("home.ready","Title"));v->addWidget(label("home.subtitle"));
+        auto v=page(home);v->addSpacing(20);v->addWidget(label("home.ready","Title"));
         auto row=new QHBoxLayout;installed=new QLabel;installed->setObjectName("Badge");newVersion=new QLabel;newVersion->setObjectName("Badge");row->addWidget(installed);row->addWidget(newVersion);row->addStretch();v->addLayout(row);
+        v->addSpacing(14);v->addWidget(label("home.location","Eyebrow"));
         location=new QLabel(target);location->setWordWrap(true);location->setObjectName("Sub");location->setTextInteractionFlags(Qt::TextSelectableByMouse);v->addWidget(location);v->addStretch();
-        auto play=button("button.launch","Primary");play->setMinimumHeight(58);v->addWidget(play);connect(play,&QPushButton::clicked,this,[this]{send("launch");});
+        status=new QLabel;status->setWordWrap(true);status->setObjectName("Sub");v->addWidget(status);
+        auto play=button("button.launch","Primary");play->setMinimumHeight(54);v->addWidget(play);connect(play,&QPushButton::clicked,this,[this]{send("launch");});
         updateButton=new QPushButton;updateButton->setMinimumHeight(46);v->addWidget(updateButton);connect(updateButton,&QPushButton::clicked,this,[this]{start("update");});
         auto folders=new QHBoxLayout;auto app=button("button.app_folder","Ghost"),data=button("button.data_folder","Ghost");folders->addWidget(app);folders->addWidget(data);v->addLayout(folders);
         connect(app,&QPushButton::clicked,this,[this]{QDesktopServices::openUrl(QUrl::fromLocalFile(target));});connect(data,&QPushButton::clicked,this,[this]{QDesktopServices::openUrl(QUrl::fromLocalFile(dataPath));});
         auto manage=new QHBoxLayout;auto reinstall=button("button.reinstall","Ghost"),uninstall=button("button.uninstall","Ghost");manage->addWidget(reinstall);manage->addWidget(uninstall);v->addLayout(manage);
         connect(reinstall,&QPushButton::clicked,this,[this]{pages->setCurrentWidget(setup);});
         connect(uninstall,&QPushButton::clicked,this,[this]{QMessageBox box(QMessageBox::Question,"ECHOES",tr("uninstall.question"),QMessageBox::NoButton,this);auto yes=box.addButton(tr("dialog.yes"),QMessageBox::AcceptRole);box.addButton(tr("dialog.no"),QMessageBox::RejectRole);box.exec();if(box.clickedButton()==yes)send("uninstall");});
-        status=new QLabel;status->setWordWrap(true);status->setObjectName("Sub");v->addWidget(status);
     }
     void buildSetup(){
         auto v=page(setup);v->setSpacing(11);v->addWidget(label("setup.title","Title"));v->addWidget(label("setup.subtitle"));v->addSpacing(4);v->addWidget(label("setup.location","Eyebrow"));
@@ -267,20 +306,20 @@ public:
         connect(choose,&QPushButton::clicked,this,[this]{auto path=QFileDialog::getExistingDirectory(this,tr("setup.choose"),directory->text());if(!path.isEmpty()){directory->setText(QDir(path).filePath("ECHOES"));applyText();}});
         space=new QLabel;space->setObjectName("Sub");v->addWidget(space);v->addWidget(label("setup.options","Eyebrow"));
         const char *keys[]={"desktop","menu","spotify","autostart","launch"};
-        for(auto key:keys){auto check=new QCheckBox;const QString id=key;check->setChecked(store.value("opt_"+id,id!="autostart").toBool());options[id]=check;v->addWidget(check);}
+        for(auto key:keys){auto check=new QCheckBox;const QString id=key;check->setChecked(store.value("opt_"+id,id!="autostart" && id!="spotify").toBool());options[id]=check;v->addWidget(check);}
         v->addStretch();auto bottom=new QHBoxLayout;back=button("button.back","Ghost");bottom->addWidget(back);auto install=button("button.install","Primary");install->setMinimumHeight(52);bottom->addWidget(install,1);v->addLayout(bottom);
         connect(back,&QPushButton::clicked,this,[this]{pages->setCurrentWidget(home);});connect(install,&QPushButton::clicked,this,[this]{start("install");});
     }
     void buildProgress(){
-        auto v=page(progressPage);v->addSpacing(24);progressTitle=new QLabel;progressTitle->setObjectName("Title");progressTitle->setWordWrap(true);v->addWidget(progressTitle);v->addWidget(label("progress.note"));v->addStretch();
-        progressLabel=new QLabel;progressLabel->setWordWrap(true);v->addWidget(progressLabel);bar=new QProgressBar;bar->setTextVisible(false);v->addWidget(bar);
+        auto v=page(progressPage);v->addSpacing(24);progressTitle=new QLabel;progressTitle->setObjectName("Title");progressTitle->setWordWrap(true);v->addWidget(progressTitle);v->addStretch();
+        progressLabel=new QLabel;progressLabel->setWordWrap(true);v->addWidget(progressLabel);progressPercent=new QLabel;progressPercent->setObjectName("Eyebrow");v->addWidget(progressPercent);bar=new QProgressBar;bar->setTextVisible(false);v->addWidget(bar);
         details=button("button.details","Ghost");v->addWidget(details);log=new QPlainTextEdit;log->setReadOnly(true);log->setMaximumBlockCount(1500);log->setMinimumHeight(180);log->hide();v->addWidget(log);v->addStretch();
         connect(details,&QPushButton::clicked,this,[this]{log->setVisible(!log->isVisible());});
         retry=button("button.back");retry->hide();v->addWidget(retry);connect(retry,&QPushButton::clicked,this,[this]{pages->setCurrentWidget(version.isEmpty()?setup:home);});
     }
     void buildDone(){
-        auto v=page(donePage);v->addStretch();auto icon=new QLabel("✓");icon->setAlignment(Qt::AlignCenter);icon->setStyleSheet("font-size:58px;color:"+accent.name());v->addWidget(icon);
-        doneTitle=new QLabel;doneTitle->setObjectName("Title");doneTitle->setWordWrap(true);doneTitle->setAlignment(Qt::AlignCenter);v->addWidget(doneTitle);auto sub=label("done.subtitle");sub->setAlignment(Qt::AlignCenter);v->addWidget(sub);v->addStretch();
+        auto v=page(donePage);v->addStretch();
+        doneTitle=new QLabel;doneTitle->setObjectName("Title");doneTitle->setWordWrap(true);doneTitle->setAlignment(Qt::AlignCenter);v->addWidget(doneTitle);v->addStretch();
         auto row=new QHBoxLayout;auto homeButton=button("button.home");row->addWidget(homeButton);auto play=button("button.launch","Primary");play->setMinimumHeight(52);row->addWidget(play,1);v->addLayout(row);
         connect(homeButton,&QPushButton::clicked,this,[this]{send("refresh");pages->setCurrentWidget(home);});connect(play,&QPushButton::clicked,this,[this]{send("launch");});
     }
@@ -288,11 +327,11 @@ public:
         for(const auto &pair:labels)pair.first->setText(tr(pair.second));
         for(const auto &pair:buttons)pair.first->setText(tr(pair.second));
         for(auto it=options.begin();it!=options.end();++it)it.value()->setText(tr("option."+it.key()));
-        brand->caption=tr("brand.caption");brand->tagline=tr("brand.tagline");brand->detail=tr("brand.detail");brand->update();
+        brand->platform=tr("brand.platform");brand->update();
         launcherLabel->setText(tr("header.launcher"));languages->setAccessibleName(tr("language.label"));languageFiles->setToolTip(tr("language.manage"));languageFiles->setAccessibleName(tr("language.manage"));
         installed->setText(formatted("home.installed"));newVersion->setText(tr("home.new").replace("{version}",remote));newVersion->setVisible(newer);
         updateButton->setText(tr("button.update").replace("{version}",remote));updateButton->setVisible(newer);location->setText(target);back->setVisible(!version.isEmpty());
-        status->setText(tr(statusKey));progressTitle->setText(tr(mode=="update"?"progress.update":"progress.install"));progressLabel->setText(tr(stage));doneTitle->setText(tr(mode=="update"?"done.update":"done.install"));
+        status->setText(tr(statusKey));progressTitle->setText(tr(mode=="update"?"progress.update":"progress.install"));progressLabel->setText(tr(stage));updatePercentage();doneTitle->setText(tr(mode=="update"?"done.update":"done.install"));
         QString disk=directory->text();
         while(!QFileInfo::exists(disk)){
             const auto parent=QFileInfo(disk).dir().absolutePath();
@@ -315,20 +354,27 @@ public:
     void setState(const QJsonObject &s){
         if(s.contains("target")){target=s["target"].toString();store.setValue("installation",target);directory->setText(target);}
         if(s.contains("version"))version=s["version"].toString();
-        if(s.contains("remote")){remote=s["remote"].toString();statusKey=remote.isEmpty()?"home.offline":"home.latest";}
+        if(s.contains("remote"))remote=s["remote"].toString();
         newer=isNewer(remote,version);
+        if(s.contains("remote")||statusKey=="home.latest"||statusKey.isEmpty())
+            statusKey=remote.isEmpty()?"home.offline":newer?QString():"home.latest";
         if(s.contains("status"))statusKey=s["status"].toString();
         applyText();
         if(s.contains("status")&&statusKey.startsWith("error."))QMessageBox::warning(this,tr("error.title"),tr(statusKey));
     }
     void progress(int pct,const QJsonObject &event){
-        if(pct>=0){bar->setRange(0,100);bar->setValue(qBound(0,pct,100));}else bar->setRange(0,0);
+        if(pct>=0){bar->setRange(0,100);bar->setValue(qBound(0,pct,100));}else if(pct==-1)bar->setRange(0,0);
         if(event.contains("stage"))stage=event["stage"].toString();
         if(event.contains("line"))log->appendPlainText(event["line"].toString());
         progressLabel->setText(tr(stage));
+        updatePercentage();
+    }
+    void updatePercentage() {
+        progressPercent->setVisible(bar->maximum() > 0 && busy);
+        progressPercent->setText(tr("progress.complete").replace("{percent}", QString::number(bar->value())));
     }
     void done(bool success,const QString &error){
-        busy=false;bar->setRange(0,100);bar->setValue(success?100:0);
+        busy=false;bar->setRange(0,100);bar->setValue(success?100:0);updatePercentage();
         if(success){pages->setCurrentWidget(donePage);applyText();}else{stage=error.isEmpty()?"error.backend":error;progressLabel->setText(tr(stage));log->show();retry->show();}
     }
     bool loadPack(const QByteArray &bytes,bool persist){
@@ -354,10 +400,10 @@ protected:
 private:
     QSettings store;
     QString language,customName,target,version,remote,dataPath,mode="install",stage="progress.download",statusKey="home.checking";
-    QJsonObject custom;QColor accent;bool busy=false,newer=false;
+    QJsonObject custom;bool busy=false,newer=false;
     Brand *brand;QStackedWidget *pages;QWidget *home,*setup,*progressPage,*donePage;
     QComboBox *languages;QPushButton *languageFiles,*updateButton,*back,*details,*retry;
-    QLabel *launcherLabel,*installed,*newVersion,*location,*status,*space,*progressTitle,*progressLabel,*doneTitle;
+    QLabel *launcherLabel,*installed,*newVersion,*location,*status,*space,*progressTitle,*progressLabel,*progressPercent,*doneTitle;
     QLineEdit *directory;QProgressBar *bar;QPlainTextEdit *log;
     QMap<QString,QCheckBox*> options;
     QVector<QPair<QLabel*,QString>> labels;QVector<QPair<QPushButton*,QString>> buttons;

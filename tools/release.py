@@ -65,8 +65,15 @@ def manifest_for(commit: str, channel: str, notes: str) -> dict:
             if m.isfile() and rs.covered(m.name):
                 files[m.name] = rs.sha256(t.extractfile(m).read())
     ver = git("show", f"{commit}:app/version.txt").strip()
-    return {"version": ver, "commit": commit, "channel": channel, "notes": notes[:2000], "ts": int(time.time()),
-            "files": files}
+    result = {"version": ver, "commit": commit, "channel": channel, "notes": notes[:2000], "ts": int(time.time()),
+              "files": files}
+    if "setup/launcher.sha256" in files:
+        expected = git("show", f"{commit}:setup/launcher.sha256").lower()
+        launcher = git("show", f"{commit}:ECHOES Launcher.exe", binary=True)
+        if rs.sha256(launcher) != expected:
+            raise RuntimeError("Run tools/build_launcher.ps1 and commit the launcher with its checksum.")
+        result["launcher_sha256"] = expected
+    return result
 
 
 def main():
@@ -109,8 +116,7 @@ def main():
         (rel / f"{ch}.json").write_text(json.dumps(m, ensure_ascii=False, indent=1, sort_keys=True), "utf-8")
         print(f"{ch}: {m['version']} ({head[:7]}), файлов {len(m['files'])}")
     git("add", "release")
-    git("commit", "-q", "-m", f"release {git('show', f'{head}:app/version.txt')} → {', '.join(channels)}\n\n"
-        "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>")
+    git("commit", "-q", "-m", f"release {git('show', f'{head}:app/version.txt')} → {', '.join(channels)}")
     if not a.no_push:
         git("push", "-q")
         print("Опубликовано.")

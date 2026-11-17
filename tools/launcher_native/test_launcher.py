@@ -26,7 +26,11 @@ dll.ela_load_pack.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
 dll.ela_state.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 dll.ela_english_template.restype = ctypes.c_char_p
 encode = lambda obj: json.dumps(obj, ensure_ascii=False).encode('utf-8')
-state = {'target': r'C:\Programs\ECHOES', 'version': '2026.11.03-2', 'default': r'C:\Programs\ECHOES', 'accent':'#ffdb1a',
+assets = HERE.parents[1] / 'app/assets'
+state = {'target': r'C:\Programs\ECHOES', 'version': '2026.11.03-2', 'default': r'C:\Programs\ECHOES',
+         'mark': str(assets / 'logo/echoes_mark.png'),
+         'display_font': str(assets / 'fonts/nick/UnifrakturMaguntia-Book.ttf'),
+         'ui_fonts': [str(assets / f'fonts/inter/Inter-{script}.ttf') for script in ('latin', 'cyrillic')],
          'settings_path': str(Path(temporary.name) / 'launcher.ini')}
 pointer = dll.ela_new(encode(state))
 window = sip.wrapinstance(pointer, QWidget)

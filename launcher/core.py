@@ -1,12 +1,15 @@
 """ECHOES Launcher core: find the installation, talk to GitHub, run the bundled installer / updater.
 Never touches the user's music or the data folder (~/Echoes)."""
 from pathlib import Path
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
-import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 
@@ -18,6 +21,7 @@ VERSION_URL = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/app/version.tx
 ZIP_URL = f"https://codeload.github.com/{REPO}/zip/refs/heads/{BRANCH}"
 RELEASE_URL = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/release/stable.json"
 COMMIT_ZIP_URL = f"https://codeload.github.com/{REPO}/zip/{{commit}}"
+APP_ZIP_URL = f"https://github.com/{REPO}/releases/download/v{{tag}}/ECHOES.App.zip"
 
 
 def _release_sign():
@@ -118,14 +122,8 @@ def launch(root):
     return subprocess.Popen([str(root / "python/pythonw.exe"), str(root / "app/main.py")], cwd=root / "app")
 
 
-def download_source(progress=lambda done, total: None, cancel=lambda: False) -> Path:
-    """Подписанный выпуск с GitHub → распакованная папка (с app/ и setup/), каждый файл сверен с подписью."""
-    manifest = release()
-    base = Path(tempfile.gettempdir()) / "echoes_launcher"
-    base.mkdir(parents=True, exist_ok=True)
-    zpath = base / "echoes.zip"
-    req = urllib.request.Request(COMMIT_ZIP_URL.format(commit=manifest["commit"]),
-                                 headers={"User-Agent": "ECHOES-Launcher"})
+def _download_archive(url, zpath, progress, cancel):
+    req = urllib.request.Request(url, headers={"User-Agent": "ECHOES-Launcher"})
     with urllib.request.urlopen(req, timeout=30) as r, open(zpath, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
         done = 0
@@ -138,21 +136,54 @@ def download_source(progress=lambda done, total: None, cancel=lambda: False) -> 
             f.write(chunk)
             done += len(chunk)
             progress(done, total)
-    out = base / f"src-{int(time.time())}"
-    with zipfile.ZipFile(zpath) as z:
-        for n in z.namelist():
-            if Path(n).is_absolute() or ".." in Path(n).parts:
-                raise RuntimeError("подозрительный путь в архиве")
-        root = z.namelist()[0].split("/")[0]
-        z.extractall(out)
-    zpath.unlink(missing_ok=True)
-    src = out / root
-    if not (src / "app/main.py").is_file() or not (src / "setup/install.ps1").is_file():
-        raise RuntimeError("в архиве нет программы")
-    problems = _release_sign().check_tree(src, manifest)
-    if problems:
-        raise RuntimeError("файлы не совпали с подписью автора: " + "; ".join(problems[:3]))
-    return src
+
+
+def download_source(progress=lambda done, total: None, cancel=lambda: False, launcher=None) -> Path:
+    """Download and verify the signed release, reusing the running EXE when its hash matches."""
+    manifest = release()
+    base = Path(tempfile.mkdtemp(prefix="echoes-launcher-"))
+    zpath = base / "package.zip"
+    expected = manifest.get("launcher_sha256")
+    compact = False
+    try:
+        if expected and launcher:
+            with Path(launcher).open("rb") as f:
+                reuse_launcher = hashlib.file_digest(f, "sha256").hexdigest() == expected
+            if reuse_launcher:
+                tag = urllib.parse.quote(manifest["version"], safe="")
+                try:
+                    _download_archive(APP_ZIP_URL.format(tag=tag), zpath, progress, cancel)
+                    compact = True
+                except urllib.error.URLError:
+                    # The signed manifest can reach GitHub before the asset finishes publishing.
+                    pass
+        if not compact:
+            _download_archive(COMMIT_ZIP_URL.format(commit=manifest["commit"]), zpath, progress, cancel)
+
+        src = base / "source"
+        with zipfile.ZipFile(zpath) as archive:
+            roots = set()
+            for name in archive.namelist():
+                parts = name.rstrip("/").split("/")
+                if not all(parts) or ".." in parts or "." in parts or "\\" in name or ":" in name:
+                    raise RuntimeError("подозрительный путь в архиве")
+                roots.add(parts[0])
+            if len(roots) != 1:
+                raise RuntimeError("неверная структура архива")
+            archive.extractall(src)
+            src /= roots.pop()
+        zpath.unlink()
+        if not (src / "app/main.py").is_file() or not (src / "setup/install.ps1").is_file():
+            raise RuntimeError("в архиве нет программы")
+        problems = _release_sign().check_tree(src, manifest)
+        if problems:
+            raise RuntimeError("файлы не совпали с подписью автора: " + "; ".join(problems[:3]))
+        if compact:
+            shutil.copyfile(launcher, src / "ECHOES Launcher.exe")
+        return src
+    except BaseException:
+        shutil.rmtree(base, ignore_errors=True)
+        raise
 
 
 STEP_RE = re.compile(r"\[(\d+)/(\d+)\]\s*(.*)")

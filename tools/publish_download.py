@@ -62,6 +62,16 @@ def main():
         launcher = folder / 'ECHOES.Launcher.exe'
         shutil.copyfile(source / 'ECHOES Launcher.exe', launcher)
         assets = [archive, launcher, ROOT / 'release/stable.json']
+        zip_assets = {archive}
+        if manifest.get('launcher_sha256'):
+            if hashlib.sha256(launcher.read_bytes()).hexdigest() != manifest['launcher_sha256']:
+                raise RuntimeError('Launcher does not match the signed release')
+            app_archive = folder / 'ECHOES.App.zip'
+            subprocess.run(['git', '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'archive',
+                            '--format=zip', '--prefix=ECHOES/', '-o', str(app_archive), manifest['commit'],
+                            'app', 'setup'], cwd=ROOT, check=True)
+            assets.insert(1, app_archive)
+            zip_assets.add(app_archive)
         checksums = folder / 'SHA256SUMS.txt'
         checksums.write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n'
                                      for p in assets), 'utf-8')
@@ -89,7 +99,7 @@ def main():
                         if ('sha256:' + hashlib.sha256(old_sums).hexdigest() == existing[asset.name]['digest']
                                 and old_sums.replace(b'\r\n', b'\n') == checksums.read_bytes().replace(b'\r\n', b'\n')):
                             continue
-                    if asset != archive:
+                    if asset not in zip_assets:
                         raise RuntimeError('Existing asset differs: ' + asset.name)
                     # Git on Windows/Linux may use different ZIP compression libraries.
                     # Accept an existing archive only when every entry has identical content.
@@ -97,11 +107,11 @@ def main():
                         old_bytes = response.read()
                     if 'sha256:' + hashlib.sha256(old_bytes).hexdigest() != existing[asset.name]['digest']:
                         raise RuntimeError('Existing archive checksum mismatch')
-                    with zipfile.ZipFile(io.BytesIO(old_bytes)) as old, zipfile.ZipFile(archive) as new:
+                    with zipfile.ZipFile(io.BytesIO(old_bytes)) as old, zipfile.ZipFile(asset) as new:
                         if set(old.namelist()) != set(new.namelist()) or any(
                                 old.read(name) != new.read(name) for name in new.namelist()):
                             raise RuntimeError('Existing archive content differs')
-                    archive.write_bytes(old_bytes)
+                    asset.write_bytes(old_bytes)
                     checksums.write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n'
                                                 for p in assets if p != checksums), 'utf-8')
                 continue

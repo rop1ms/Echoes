@@ -2311,7 +2311,7 @@ def _clear_layout(lay):
 # ══════════════════════════════════════════════════════════════════════════ #
 
 class Logo(QWidget):
-    """Колючая «звезда» + ECHOES (вместо «Яндекс Музыки»). Клик — на главную («Для вас и тренды»)."""
+    """Знак ECHOES (нота-клинок, echoes_mark) + надпись. Клик — на главную («Для вас и тренды»)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2349,35 +2349,16 @@ class Logo(QWidget):
                 w = w.parentWidget()
             dec = getattr(w, "decor", None)
             if dec is not None and e.position().x() < 46 and dec.logo_clicked():
-                return                                         # кликают по солнцу подряд — пасхалка
+                return                                         # кликают по знаку подряд — пасхалка
             if w is not None:
                 w.show_page("foryou")
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        import ya_decor
-        acc = ya_decor.accent()
-        c = QPointF(24, 27)
-        path = QPainterPath()
-        n = 14
-        for i in range(n * 2):
-            a = i * math.pi / n - math.pi / 2
-            r = 15 if i % 2 == 0 else (6.5 if i % 4 else 8.5)
-            pt = QPointF(c.x() + math.cos(a) * r, c.y() + math.sin(a) * r)
-            if i == 0:
-                path.moveTo(pt)
-            else:
-                path.lineTo(pt)
-        path.closeSubpath()
-        g = QRadialGradient(c, 16)
-        g.setColorAt(0, acc.lighter(150))
-        g.setColorAt(0.6, acc)
-        g.setColorAt(1, ya_decor.accent2())
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(g)
-        p.drawPath(path)
-        p.setPen(acc)
+        import echoes_mark                                     # знак ECHOES — нота-клинок, белым
+        echoes_mark.paint_mark(p, QRectF(6, 5, 36, 44), echoes_mark.FG)
+        p.setPen(echoes_mark.FG)
         p.setFont(self._text_font())
         p.drawText(QRectF(48, 6, max(200, self.width() - 48), 42),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "ECHOES")
