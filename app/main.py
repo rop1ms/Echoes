@@ -8656,6 +8656,7 @@ class MainWindow(QMainWindow):
             if self._downloader_dialog is not None and self._downloader_dialog.manager.busy:
                 self._downloader_dialog.manager.cancel()
         except Exception:pass
+        self.loudness.shutdown()
         try:self.engine.stop();self.engine.shutdown()
         except Exception:pass
         try:self._autotag_flush(all_=True)               # найденные теги играющего трека — в файл, раз он закрыт
@@ -8689,6 +8690,19 @@ class MainWindow(QMainWindow):
         except Exception:pass
         event.accept()
         QTimer.singleShot(0, QApplication.instance().quit)   # трей отключил выход по закрытию окна
+
+def _dispose_qt(app, win):
+    """Destroy native widgets while Python and their Qt callbacks are still available."""
+    from PyQt6 import sip
+    from PyQt6.QtCore import QCoreApplication, qInstallMessageHandler
+
+    qInstallMessageHandler(None)
+    if not sip.isdeleted(win):
+        win.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    if not sip.isdeleted(app):
+        sip.delete(app)
+
 
 def _install_crash_logging():
     """Любая ошибка — и Python, и нативный краш Qt — пишется в
@@ -8949,4 +8963,5 @@ if __name__=="__main__":
         sys.stderr.flush()
     except Exception:                                    # noqa: BLE001
         pass
+    _dispose_qt(app, win)
     sys.exit(_code)

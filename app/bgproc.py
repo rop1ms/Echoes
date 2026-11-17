@@ -221,12 +221,19 @@ def fg_busy() -> bool:
     return not _fg_free.is_set()
 
 
-def idle_wait(max_wait: float = 600.0):
+def idle_wait(max_wait: float = 600.0, cancel: threading.Event | None = None):
     """Фоновому потоку: подождать, пока передний план занят (не дольше max_wait секунд).
     В главном потоке ничего не делает."""
     if _fg_free.is_set() or threading.current_thread() is threading.main_thread():
         return
-    _fg_free.wait(max_wait)
+    if cancel is None:
+        _fg_free.wait(max_wait)
+        return
+    deadline = time.monotonic() + max_wait
+    while not cancel.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or _fg_free.wait(min(.1, remaining)):
+            return
 
 
 _tl = threading.local()

@@ -281,6 +281,9 @@ finally:
     if store is not None:
         try:store.db.close()
         except Exception:pass
+    import atomic_json
+    atomic_json.flush()
+    main._dispose_qt(app, win)
     temporary.cleanup()
 
 report=dict(scope='Isolated real-app startup, repeated music/net tabs, filters/language/resize/restore; no radio/editor/full playback scenario',
