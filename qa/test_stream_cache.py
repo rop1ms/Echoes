@@ -54,22 +54,28 @@ class StreamCache(unittest.TestCase):
             self.addCleanup(p.stop)
         self.track = S.make_track({'artist': 'Artist', 'title': 'Song01', 'duration': 200})
 
+    def resolver(self):
+        resolver = S.StreamResolver()
+        self.addCleanup(resolver.pool.shutdown, cancel_futures=True)
+        self.addCleanup(resolver.urgent.shutdown, cancel_futures=True)
+        return resolver
+
     def test_remembered_page_and_link_survive_restart(self):
-        r = S.StreamResolver()
+        r = self.resolver()
         self.assertTrue(wait(r, self.track, urgent=True)['ok'])
         self.assertEqual((self.fake.finds, self.fake.directs), (1, 1))
         r._save(force=True)
-        r2 = S.StreamResolver()
+        r2 = self.resolver()
         self.assertTrue(r2.cached(self.track['path']), 'link served after restart')
         self.assertTrue(wait(r2, self.track)['ok'])
         self.assertEqual((self.fake.finds, self.fake.directs), (1, 1))
-        r3 = S.StreamResolver()
+        r3 = self.resolver()
         r3.cache.clear()                                        # link expired
         self.assertTrue(wait(r3, self.track)['ok'])
         self.assertEqual((self.fake.finds, self.fake.directs), (1, 2), 'page remembered: no second search')
 
     def test_dead_page_is_searched_again(self):
-        r = S.StreamResolver()
+        r = self.resolver()
         wait(r, self.track)
         page = r.pages[self.track['path']]['page']
         self.fake.dead.add(page)
@@ -82,7 +88,7 @@ class StreamCache(unittest.TestCase):
         self.assertEqual(r.pages[self.track['path']]['page'], page + 'new')
 
     def test_hint_resolves_latest_only(self):
-        r = S.StreamResolver()
+        r = self.resolver()
         a = S.make_track({'artist': 'A', 'title': 'Hover1', 'duration': 100})
         b = S.make_track({'artist': 'A', 'title': 'Hover2', 'duration': 100})
         r.hint(a)
@@ -101,13 +107,17 @@ class StreamCache(unittest.TestCase):
                 slow.wait(5)
             return self.fake.direct(page)
         with patch.object(S.StreamResolver, '_direct', staticmethod(busy)):
-            r = S.StreamResolver()
-            for i in range(4):                                  # prefetch pool (3 workers) fully busy
-                r.resolve(S.make_track({'artist': 'A', 'title': f'Slow{i}', 'duration': 100}))
-            t0 = time.perf_counter()
-            out = wait(r, self.track, urgent=True)
-            took = time.perf_counter() - t0
-            slow.set()
+            r = self.resolver()
+            try:
+                for i in range(4):                              # prefetch pool (3 workers) fully busy
+                    r.resolve(S.make_track({'artist': 'A', 'title': f'Slow{i}', 'duration': 100}))
+                t0 = time.perf_counter()
+                out = wait(r, self.track, urgent=True)
+                took = time.perf_counter() - t0
+            finally:
+                slow.set()
+                # Keep _direct patched until all prefetch workers leave.
+                r.pool.shutdown(cancel_futures=True)
         self.assertTrue(out['ok'])
         self.assertLess(took, 2.0)
 
