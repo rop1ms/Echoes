@@ -1703,6 +1703,9 @@ class TrackListView(QListView):
             m.addAction("Найти в коллекции", lambda: self.shell.find_in_collection(t))
         if hasattr(self.shell.win, "export_effects"):
             m.addAction("Экспорт с эффектами…", lambda: self.shell.win.export_effects([t]))
+        if str(t.get("path", "")).lower().endswith(".mp3"):
+            import flac_upgrade
+            m.addAction("Заменить на FLAC…", lambda: flac_upgrade.open_for(self.shell.win, [t]))
         m.addAction("Убрать из «Мне нравится»" if self.shell.is_liked(t) else "Мне нравится",
                     lambda: self.shell.toggle_like(t))
         sub = m.addMenu("Добавить в плейлист")
@@ -1746,6 +1749,10 @@ class TrackListView(QListView):
         m.addAction(f"＋  Добавить в очередь ({n})", lambda: self.shell.win.queue_add(tracks))
         if hasattr(self.shell.win, "export_effects"):
             m.addAction(f"Экспорт с эффектами ({n})…", lambda: self.shell.win.export_effects(tracks))
+        mp3 = [x for x in tracks if str(x.get("path", "")).lower().endswith(".mp3")]
+        if mp3:
+            import flac_upgrade
+            m.addAction(f"Заменить на FLAC ({len(mp3)})…", lambda: flac_upgrade.open_for(self.shell.win, mp3))
         sub = m.addMenu(f"＋  Добавить в плейлист ({n})")
         for name in self.shell.user_playlists():
             sub.addAction(name, lambda nm=name: self.shell.win.playlist_add_tracks(nm, tracks))
@@ -6953,6 +6960,10 @@ class YaShell(QWidget):
         import cleanup
         sec("library", "Очистка медиатеки и кэша", "Битые файлы, клипы и кэш — сколько места занимает и что убрать",
             "settings", lambda: cleanup.CleanupDialog(w, 0), "очистка кэш место диск удалить", height=640)
+        import flac_upgrade
+        sec("library", "MP3 → FLAC", "Заменить MP3 выбранных треков настоящими FLAC из ваших папок — с проверкой "
+            "на подделку", "download", lambda: flac_upgrade.FlacUpgrade(w),
+            "flac lossless без потерь качество hi-res hires заменить mp3 на flac улучшить звук cd рип", height=420)
         sec("library", "Найти пропавшие треки", "Треки, файлы которых на диске, а в коллекции их нет", "search",
             lambda: si.LostTracks(w), "пропавшие треки вернуть восстановить коллекция")
         # ── Инструменты ──

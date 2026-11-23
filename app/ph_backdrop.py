@@ -15,6 +15,12 @@
   * кадры — через общие часы frameclock; окно свёрнуто или скрыто, «уменьшенное движение» или эффекты
     выключены — таймеры стоят, фон неподвижен.
 
+Фон из обложки (set_cover, настройка «Фон — обложка трека»): размытая обложка играющего трека вместо
+картинки, при смене трека старая картинка плавно растворяется в новой (FADE_MS), а поверх медленно плывут
+и перетекают друг в друга большие мягкие пятна цветов обложки (cover_palette). Пятна живут в том же
+маленьком слое, что вспышки и дым, только он обновляется чаще (FLOW_MS); при смене трека цвета пятен
+плавно переходят в цвета новой обложки (PALETTE_MS).
+
 frozen_blur(widget) — «снимок с размытием» под выезжающие панели: один раз при открытии панели, а не
 backdrop-filter на каждом кадре, как в Electron.
 """
@@ -40,6 +46,10 @@ ATMO_SCALE = 1 / 6          # слой вспышек и дыма — в 1/6 р�
 ATMO_MS = 250               # и обновляется 4 раза в секунду
 DUST_MS = 33                # пылинки — 30 кадров в секунду (как у Phantom)
 REBUILD_DELAY_MS = 120      # пересборка неподвижного слоя после смены размера
+FLOW_MS = 125               # слой с пятнами цветов обложки — 8 раз в секунду (пятна плывут медленно)
+FADE_MS = 1400              # растворение старой картинки фона в новой
+PALETTE_MS = 2600           # переход цветов пятен к цветам новой обложки
+FADE_TICK_MS = 33           # кадры на время растворения
 
 
 def phantom_params(intensity: float, brightness: float = 1.0) -> dict:
@@ -147,7 +157,7 @@ def _sprites():
 class _ImageJob(QObject):
     done = pyqtSignal(int, QImage)
 
-    def run(self, token: int, src, size: QSize, blur: float, brightness: float):
+    def run(self, token: int, src, size: QSize, blur: float, brightness: float, sat: float = .48):
         def work():
             img = QImage()
             try:
@@ -155,7 +165,7 @@ class _ImageJob(QObject):
                 # inset -8 %: картинка на 16 % больше окна, чтобы размытые края не темнели
                 w, h = max(8, int(size.width() * 1.16)), max(8, int(size.height() * 1.16))
                 q = .25                                         # считаем в четверть размера — всё равно размыто
-                img = blur_fx.blurred_cover(src, max(4, int(w * q)), max(4, int(h * q)), blur * q, sat=.48)
+                img = blur_fx.blurred_cover(src, max(4, int(w * q)), max(4, int(h * q)), blur * q, sat=sat)
                 if not img.isNull() and brightness < .999:
                     p = QPainter(img)
                     p.fillRect(img.rect(), QColor(0, 0, 0, int(255 * (1 - max(0.0, brightness)))))
@@ -181,6 +191,17 @@ class PhBackground(QWidget):
         self._brightness = 1.0
         self._animated = True
         self._image_src = str(DEFAULT_IMAGE) if DEFAULT_IMAGE.exists() else None
+        self._image_serial = 0                  # номер картинки (у QImage обложки нет пути)
+        self._image_sat = .48                   # насыщенность размытой картинки (у обложки — ярче)
+        self._fade_from = QPixmap()             # прежний неподвижный слой, пока растворяется
+        self._fade_t0 = 0.0
+        self._fade_timer = FrameTimer(self)
+        self._fade_timer.setInterval(FADE_TICK_MS)
+        self._fade_timer.timeout.connect(self._fade_tick)
+        self._flow = False                      # пятна цветов обложки
+        self._pal_from: list[QColor] = []
+        self._pal_to: list[QColor] = []
+        self._pal_t0 = 0.0
         self._image = QImage()                   # размытая картинка (¼ размера, с запасом 16 %)
         self._image_for: tuple | None = None
         self._token = 0
@@ -207,15 +228,22 @@ class PhBackground(QWidget):
 
     # ── настройки ── #
     def configure(self, intensity: float | None = None, brightness: float | None = None,
-                  animated: bool | None = None, image=...):
-        """image: путь / QImage / None (без картинки); не передан — оставить как есть."""
+                  animated: bool | None = None, image=..., saturation: float | None = None):
+        """image: путь / QImage / None (без картинки); не передан — оставить как есть. Прежняя картинка
+        остаётся на экране, пока новая размывается в фоне, и затем растворяется в ней."""
         changed = False
+        if saturation is not None and abs(saturation - self._image_sat) > 1e-3:
+            self._image_sat, changed = float(saturation), True
         if intensity is not None and abs(intensity - self._intensity) > 1e-3:
             self._intensity, changed = float(intensity), True
         if brightness is not None and abs(brightness - self._brightness) > 1e-3:
             self._brightness, changed = float(brightness), True
         if image is not ...:
-            self._image_src, self._image_for, self._image = image, None, QImage()
+            self._image_src, self._image_for = image, None
+            self._image_serial += 1
+            if not image:                                      # без картинки — сразу (новой ждать нечего)
+                self._begin_fade()
+                self._image = QImage()
             changed = True
         if animated is not None:
             self._animated = bool(animated)
@@ -225,6 +253,82 @@ class PhBackground(QWidget):
             self._request_image()
             self._rebuild_static()
         self._sync_timers()
+
+    def set_flow(self, on: bool):
+        """Пятна цветов обложки поверх фона (палитра — set_palette)."""
+        on = bool(on)
+        if on != self._flow:
+            self._flow = on
+            self._sync_timers()
+            self._refresh_atmosphere()
+
+    def set_palette(self, colors: list[QColor] | None):
+        """Новые цвета пятен; переход от нынешних — PALETTE_MS (без движения — сразу)."""
+        new = [QColor(c) for c in (colors or [])]
+        if self.animating() and (self._pal_from or self._pal_to):
+            self._pal_from = self._palette_now()
+            self._pal_t0 = time.perf_counter()
+        else:
+            self._pal_from, self._pal_t0 = list(new), 0.0
+        self._pal_to = new
+        self._sync_timers()
+        self._refresh_atmosphere()
+
+    def set_cover(self, img: QImage | None, fallback=None):
+        """Фон из обложки: img — обложка (пустая — вернуть fallback: свою картинку или встроенную)."""
+        if img is not None and not img.isNull():
+            self.configure(image=QImage(img), saturation=.95)
+            self.set_palette(cover_palette(img))
+        else:
+            self.configure(image=fallback, saturation=.48)
+            self.set_palette([])
+
+    def _palette_now(self) -> list[QColor]:
+        """Цвета пятен сейчас (с учётом перехода между палитрами)."""
+        a, b = self._pal_from, self._pal_to
+        if not self._pal_t0 or not a:
+            return list(b)
+        k = min(1.0, (time.perf_counter() - self._pal_t0) * 1000 / PALETTE_MS)
+        if k >= 1.0:
+            self._pal_from, self._pal_t0 = list(b), 0.0
+            return list(b)
+        k = k * k * (3 - 2 * k)                                  # плавно в начале и в конце
+        dark = QColor(0, 0, 0)                                   # пятна без пары гаснут / проявляются
+        return [_mix(a[i % len(a)] if a else dark, b[i % len(b)] if b else dark, k)
+                for i in range(max(len(a), len(b)))]
+
+    def _palette_moving(self) -> bool:
+        return bool(self._pal_t0) and (time.perf_counter() - self._pal_t0) * 1000 < PALETTE_MS
+
+    def _flow_active(self) -> bool:
+        return self._flow and bool(self._pal_to or self._pal_from) and ph.setting("effects")
+
+    # ── растворение старой картинки в новой ── #
+    def _begin_fade(self):
+        if self._static.isNull() or not self.animating():
+            self._fade_from = QPixmap()
+            return
+        self._fade_from = QPixmap(self._static)
+        self._fade_t0 = time.perf_counter()
+        if not self._fade_timer.isActive():
+            self._fade_timer.start()
+
+    def _fade_k(self) -> float:
+        if self._fade_from.isNull():
+            return 1.0
+        return min(1.0, (time.perf_counter() - self._fade_t0) * 1000 / FADE_MS)
+
+    def _fade_tick(self):
+        fading = not self._fade_from.isNull() and self._fade_k() < 1.0 and self.animating()
+        if not fading:
+            self._fade_from = QPixmap()
+        moving = self._palette_moving() and self.animating()
+        if moving:
+            self._refresh_atmosphere()                        # обновит и окно
+        else:
+            self.update()
+        if not fading and not moving:
+            self._fade_timer.stop()
 
     def set_occluders(self, rects: list[QRect]):
         """Прямоугольники стеклянных панелей (в координатах фона): под ними пылинок нет."""
@@ -264,6 +368,8 @@ class PhBackground(QWidget):
         """Отпустить картинки (окно надолго скрыто): при показе всё соберётся заново."""
         self._atmo_timer.stop()
         self._dust_timer.stop()
+        self._fade_timer.stop()
+        self._fade_from = QPixmap()
         self._rebuild.stop()
         self._static = QPixmap()
         self._image = QImage()
@@ -273,6 +379,14 @@ class PhBackground(QWidget):
 
     def _sync_timers(self):
         on = self.animating()
+        want = FLOW_MS if self._flow_active() else ATMO_MS
+        if self._atmo_timer.interval() != want:
+            self._atmo_timer.setInterval(want)
+        if on and self._palette_moving() and not self._fade_timer.isActive():
+            self._fade_timer.start()                           # переход цветов — плавными кадрами
+        elif not on and self._fade_timer.isActive():
+            self._fade_timer.stop()
+            self._fade_from = QPixmap()
         for t in (self._atmo_timer, self._dust_timer):
             if on and not t.isActive():
                 t.start()
@@ -290,18 +404,24 @@ class PhBackground(QWidget):
         if self._image_loading or not self.isVisible() or self.width() < 8 or self.height() < 8:
             return
         p = phantom_params(self._intensity, self._brightness)
-        want = (str(self._image_src) if not isinstance(self._image_src, QImage) else id(self._image_src),
-                self.width() // 32, self.height() // 32, p["image_blur"], round(p["image_brightness"], 3))
+        want = (self._image_serial, self.width() // 32, self.height() // 32, p["image_blur"],
+                round(p["image_brightness"], 3), round(self._image_sat, 2))
         if not self._image_src or want == self._image_for:
             return
         self._image_for = want
         self._token += 1
         self._image_loading = True
-        self._job.run(self._token, self._image_src, self.size(), p["image_blur"], p["image_brightness"])
+        self._job_serial = self._image_serial
+        self._job.run(self._token, self._image_src, self.size(), p["image_blur"], p["image_brightness"],
+                      self._image_sat)
 
     def _on_image(self, token: int, img: QImage):
         self._image_loading = False
         if token == self._token:
+            serial = self.__dict__.get("_job_serial", 0)
+            if serial != self.__dict__.get("_shown_serial") and self._fade_from.isNull():
+                self._begin_fade()                             # другая картинка (не новый размер) — растворить
+            self._shown_serial = serial
             self._image = img
             ph.set_tint(image_tint(img))
             if self.isVisible() and not self._rebuild.isActive():
@@ -405,7 +525,8 @@ class PhBackground(QWidget):
         img = self._atmo_img
         img.fill(Qt.GlobalColor.transparent)
         n = self._intensity
-        if n <= .001:
+        flow = self._flow_active()
+        if n <= .001 and not flow:
             return
         sp = _sprites()
         t = self._time()
@@ -413,6 +534,8 @@ class PhBackground(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
         mx = max(aw, ah)
+        if flow:
+            self._paint_flow(p, aw, ah, t, max(.35, n))
         for b in BLOOMS:
             u = math.sin(t * b["speed"] + b["phase"]) * b["drift"]
             m = math.cos(t * b["speed"] * .83 + b["phase"] * 1.7) * b["drift"] * .7
@@ -431,10 +554,33 @@ class PhBackground(QWidget):
                 p.drawImage(QRectF(ux + hx - r, uy + hy - r, 2 * r, 2 * r), sp["smoke"])
         p.end()
 
+    def _paint_flow(self, p: QPainter, aw: int, ah: int, t: float, n: float):
+        """Большие мягкие пятна цветов обложки: плывут по своим медленным петлям, и цвет каждого
+        перетекает в цвет соседа. Периоды — 1,5–3 минуты: при 8 кадрах в секунду пятно сдвигается
+        меньше чем на 3 px за кадр, глазом это плавное течение."""
+        pal = self._palette_now()
+        if not pal:
+            return
+        mx = max(aw, ah)
+        k = len(pal)
+        p.setOpacity(1.0)
+        for i, b in enumerate(FLOW_BLOBS):
+            mixk = .5 + .5 * math.sin(t * b["hue"] + b["phase"] * 2.3)
+            c = _mix(pal[i % k], pal[(i + 1) % k], mixk)
+            x = (b["x"] + math.sin(t * b["sx"] + b["phase"]) * b["ax"]) * aw
+            y = (b["y"] + math.cos(t * b["sy"] + b["phase"] * 1.4) * b["ay"]) * ah
+            r = b["r"] * mx * (1 + .08 * math.sin(t * b["sx"] * 1.7 + b["phase"]))
+            g = QRadialGradient(x, y, r)
+            for at, m in ((0, 1.0), (.35, .62), (.7, .2), (1, 0)):
+                cc = QColor(c)
+                cc.setAlphaF(max(0.0, min(1.0, b["a"] * n * m)))
+                g.setColorAt(at, cc)
+            p.fillRect(QRectF(x - r, y - r, 2 * r, 2 * r), g)
+
     def _refresh_atmosphere(self):
         # Blend the small atmosphere on the widget's backing store, using Qt's
         # dirty region. No second full-screen pixmap is needed.
-        if ph.setting("effects") and self._intensity > .001:
+        if ph.setting("effects") and (self._intensity > .001 or self._flow_active()):
             self._render_atmo()
         else:
             self._atmo_img = QImage()
@@ -508,6 +654,14 @@ class PhBackground(QWidget):
             # Qt уже обрезал рисование по обновляемой области (пылинки — крошечные прямоугольники):
             # копируются только они, а не весь кадр
             p.drawPixmap(0, 0, src)
+        old = self._fade_from
+        if not old.isNull():
+            k = self._fade_k()
+            if k < 1.0:                                        # прежняя картинка тает поверх новой
+                p.setOpacity(1.0 - k * k * (3 - 2 * k))
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                p.drawPixmap(QRectF(self.rect()), old, QRectF(old.rect()))
+                p.setOpacity(1.0)
         if not self._atmo_img.isNull():
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
@@ -574,6 +728,59 @@ def frozen_blur(widget: QWidget, blur: float = 6.0, dim: float = .55, saturation
     out = QPixmap.fromImage(small.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
                                          Qt.TransformationMode.SmoothTransformation))
     out.setDevicePixelRatio(dpr)
+    return out
+
+
+FLOW_BLOBS = [dict(x=.16, y=.20, r=.58, a=.30, ax=.16, ay=.12, sx=.052, sy=.041, hue=.061, phase=.3),
+              dict(x=.84, y=.28, r=.52, a=.26, ax=.14, ay=.16, sx=.044, sy=.057, hue=.049, phase=1.9),
+              dict(x=.64, y=.88, r=.60, a=.27, ax=.18, ay=.10, sx=.038, sy=.047, hue=.072, phase=3.4),
+              dict(x=.22, y=.82, r=.46, a=.22, ax=.12, ay=.14, sx=.058, sy=.036, hue=.055, phase=4.8),
+              dict(x=.50, y=.46, r=.40, a=.14, ax=.20, ay=.18, sx=.033, sy=.043, hue=.067, phase=5.6)]
+
+
+def _mix(a: QColor, b: QColor, k: float) -> QColor:
+    k = max(0.0, min(1.0, k))
+    return QColor.fromRgbF(a.redF() + (b.redF() - a.redF()) * k, a.greenF() + (b.greenF() - a.greenF()) * k,
+                           a.blueF() + (b.blueF() - a.blueF()) * k)
+
+
+def cover_palette(img: QImage, n: int = 4) -> list[QColor]:
+    """До n главных цветов обложки для пятен фона: пиксели раскладываются по 12 оттенкам с весом
+    «насыщенность × яркость», берутся самые весомые оттенки; цвета светлеют и чуть насыщаются, чтобы на
+    тёмном фоне светиться, а не грязнить. Чёрно-белая обложка — мягкие холодные и тёплые серые."""
+    if img is None or img.isNull():
+        return []
+    small = img.scaled(24, 24, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    bins = [[0.0, 0.0, 0.0, 0.0] for _ in range(12)]          # r, g, b, вес
+    for y in range(small.height()):
+        for x in range(small.width()):
+            c = small.pixelColor(x, y)
+            h, sat, v, _a = c.getHsvF()
+            if h < 0 or sat < .14 or v < .12:
+                continue
+            w = sat * v * (.5 + v)
+            b = bins[int(h * 12) % 12]
+            b[0] += c.redF() * w
+            b[1] += c.greenF() * w
+            b[2] += c.blueF() * w
+            b[3] += w
+    total = sum(b[3] for b in bins)
+    ranked = sorted((i for i, b in enumerate(bins) if b[3] > max(.4, total * .04)), key=lambda i: -bins[i][3])
+    picked = []
+    for i in ranked:                                          # сначала разные оттенки, не соседние
+        if all(min((i - j) % 12, (j - i) % 12) > 1 for j in picked):
+            picked.append(i)
+    picked += [i for i in ranked if i not in picked]
+    out = []
+    for b in (bins[i] for i in picked[:n]):
+        c = QColor.fromRgbF(b[0] / b[3], b[1] / b[3], b[2] / b[3])
+        h, sat, _v, _a = c.getHsvF()
+        out.append(QColor.fromHsvF(max(0.0, h), min(.85, max(.42, sat * 1.15)), .92))
+    if not out:                                                # чёрно-белая обложка
+        return [QColor(196, 200, 214), QColor(150, 146, 140), QColor(120, 124, 136)]
+    while len(out) < min(3, n):                                # один цвет — соседние оттенки того же
+        h, sat, v, _a = out[0].getHsvF()
+        out.append(QColor.fromHsvF((max(0.0, h) + .06 * len(out)) % 1.0, max(.3, sat * .8), v * .8))
     return out
 
 

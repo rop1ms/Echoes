@@ -3621,3 +3621,38 @@ EXACT.update({
     'Картинки и гифки (*.gif *.webp *.png *.jpg *.jpeg)': 'Pictures and GIFs (*.gif *.webp *.png *.jpg *.jpeg)',
 })
 EXACT.update({'Выбрать гифку из поиска…': 'Pick a GIF from search…'})
+EXACT.update({                                          # MP3 → FLAC (flac_upgrade) и фон из обложки (Phantom)
+    'MP3 → FLAC': 'MP3 → FLAC',
+    'Заменить MP3 выбранных треков настоящими FLAC из ваших папок — с проверкой на подделку':
+        'Replace MP3s of chosen tracks with genuine FLACs from your folders — checked for fakes',
+    'Заменить на FLAC…': 'Replace with FLAC…',
+        'Папка с FLAC…': 'FLAC folder…',
+    'Отметить все': 'Check all',
+    'Снять': 'Uncheck',
+    'Найти FLAC': 'Find FLAC',
+    'Заменить': 'Replace',
+    'Купить в lossless…': 'Buy lossless…',
+    'Показать найденный FLAC': 'Show the found FLAC',
+    'Старые MP3 — в Корзину': 'Move old MP3s to the Recycle Bin',
+    'FLAC не найден': 'FLAC not found',
+    'Собираю FLAC из папок…': 'Collecting FLACs from folders…',
+    'Выберите трек в списке — откроется его поиск на Bandcamp.': 'Pick a track in the list — its Bandcamp search will open.',
+    'В коллекции нет MP3 — менять нечего.': 'No MP3s in the collection — nothing to replace.',
+    'Отметьте треки — ECHOES найдёт их FLAC в ваших папках (купленные альбомы, рипы CD, загрузки) и среди FLAC в '
+    'коллекции, проверит, что это настоящий lossless, а не пересжатый MP3, и поставит FLAC на место MP3 во всех '
+    'плейлистах. Из MP3 FLAC не сделать: потерянное при сжатии не вернуть — поэтому здесь замена, а не конвертация.':
+        'Check tracks — ECHOES finds their FLACs in your folders (bought albums, CD rips, downloads) and among the FLACs '
+        'in your collection, checks that each is genuine lossless rather than a re-packed MP3, and puts the FLAC in '
+        'place of the MP3 in every playlist. An MP3 cannot become a FLAC: what compression threw away is gone — so '
+        'this replaces files instead of converting them.',
+    'Фон — обложка играющего трека': 'Background — cover of the playing track',
+    'Перетекание цветов обложки': 'Flowing cover colors',
+    'Размытая обложка за интерфейсом, при смене трека плавно растворяется в новой, а её цвета медленно плывут и '
+    'перетекают друг в друга.':
+        'A blurred cover behind the interface dissolves smoothly into the next one when the track changes, and its '
+        'colors slowly drift and flow into each other.',
+})
+TEMPLATES.update({'Заменить на FLAC ({0})…': 'Replace with FLAC ({0})…', 'Заменить ({0})': 'Replace ({0})',
+                  'Купить в lossless: {0}': 'Buy lossless: {0}', 'FLAC вместо MP3: {0}': 'FLAC instead of MP3: {0}',
+                  'Заменено на FLAC: {0}.': 'Replaced with FLAC: {0}.',
+                  'MP3 в коллекции: {0} · отмечено: {1}': 'MP3s in the collection: {0} · checked: {1}'})

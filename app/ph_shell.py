@@ -2128,11 +2128,18 @@ class PhantomLayout(QObject):
                 self.root.setStyleSheet(ph.qss())
                 self.host.update()
         if every or keys & {"bg_intensity", "bg_animation", "bg_brightness", "bg_image", "effects", "motion"}:
-            img = s["bg_image"] if s["bg_image"] and Path(s["bg_image"]).exists() else                 (str(ph_backdrop.DEFAULT_IMAGE) if ph_backdrop.DEFAULT_IMAGE.exists() else None)
+            img = self._bg_fallback()
+            new_img = (every or "bg_image" in keys) and not s.get("bg_cover")
             self.bg.configure(intensity=s["bg_intensity"], brightness=s["bg_brightness"],
-                              animated=s["bg_animation"], image=img if (every or "bg_image" in keys) else ...)
+                              animated=s["bg_animation"], image=img if new_img else ...)
             if "effects" in keys:
                 self.bg._rebuild_static()
+        if every or keys & {"bg_cover", "bg_flow", "bg_image"}:
+            self.bg.set_flow(bool(s.get("bg_cover")) and bool(s.get("bg_flow", True)))
+            if s.get("bg_cover"):
+                self.bg.set_cover(self.cover._img, self._bg_fallback())
+            elif not every and "bg_cover" in keys:             # выключили — вернуть свою или встроенную
+                self.bg.set_cover(None, self._bg_fallback())
         if every or "cover_treatment" in keys:
             self.cover.set_treatment(s["cover_treatment"])
         if every or "cover_style" in keys:
@@ -2145,6 +2152,13 @@ class PhantomLayout(QObject):
                 self.shell._lyrics_tick(None, None)
             except Exception as e:                             # noqa: BLE001
                 print("[ph] lyrics:", e)
+
+    def _bg_fallback(self):
+        """Картинка фона без обложки: своя (если файл на месте) или встроенная."""
+        f = self.phs.get("bg_image") or ""
+        if f and Path(f).exists():
+            return f
+        return str(ph_backdrop.DEFAULT_IMAGE) if ph_backdrop.DEFAULT_IMAGE.exists() else None
 
     def rebuild(self):
         """Пересобрать оболочку (масштаб интерфейса, сброс раздела) — музыка не прерывается."""
@@ -2402,6 +2416,8 @@ class PhantomLayout(QObject):
         t = self._cover_for
         self.cover.set_track(t)
         self.cover.set_image(img, _title(t) if t else "", _artist(t) if t else "")
+        if self.phs.get("bg_cover"):                           # фон — обложка трека, с перетеканием цветов
+            self.bg.set_cover(img, self._bg_fallback())
         self.refresh_cover_media()
         self.right.live.set_track(t, img)
 

@@ -33,6 +33,7 @@ PH_DEFAULTS = {
     "blur": 28, "bg_intensity": .6, "bg_animation": True, "card_opacity": .72, "ui_scale": 1.0, "effects": True,
     "cover_treatment": "original", "motion": "system", "cover_video": "off", "cover_video_path": "",
     "bg_image": "", "bg_brightness": 1.0,
+    "bg_cover": False, "bg_flow": True,                    # фон — обложка трека; перетекание её цветов
     "cover_style": "info", "cover_rules": [],              # вид карточки обложки; свои обложки (ph_cover)
     "lyrics_scale": 1.0, "lyrics_blur": True, "lyrics_words": True, "lyrics_autoscroll": True,
 }
@@ -1056,6 +1057,18 @@ def settings_cards(lay) -> list:
                           lambda x: put(bg_brightness=round(x / 100, 2))))
     c.v.addWidget(_switch("Фоновая анимация (свет, дым, пылинки)", s["bg_animation"],
                           lambda on: put(bg_animation=on)))
+    flow_row = _switch("Перетекание цветов обложки", s["bg_flow"], lambda on: put(bg_flow=on))
+
+    def cover_bg(on):
+        put(bg_cover=on)
+        flow_row.setEnabled(on)
+    c.v.addWidget(_switch("Фон — обложка играющего трека", s["bg_cover"], cover_bg))
+    flow_hint = pw.label("Размытая обложка за интерфейсом, при смене трека плавно растворяется в новой, а её цвета "
+                         "медленно плывут и перетекают друг в друга.", "PhMuted")
+    flow_hint.setWordWrap(True)
+    c.v.addWidget(flow_hint)
+    flow_row.setEnabled(s["bg_cover"])
+    c.v.addWidget(flow_row)
     c.v.addWidget(_Slider("Прозрачность карточек", 30, 100, s["card_opacity"] * 100, lambda x: f"{int(x)} %",
                           lambda x: put(card_opacity=round(x / 100, 2))))
     c.v.addWidget(_Slider("Размытие под панелями", 0, 40, s["blur"], lambda x: f"{int(x)} px",
@@ -1075,7 +1088,8 @@ def settings_cards(lay) -> list:
                        pick_bg, reset_bg)
     c.v.addWidget(bg_row)
     out.append(("look", "Фон и стекло", c, "фон картинка обои яркость анимация пылинки дым свет прозрачность "
-                                           "карточек стекло размытие blur эффекты тени зерно phantom"))
+                                           "карточек стекло размытие blur эффекты тени зерно phantom обложка "
+                                           "фон из обложки цвета перетекание градиент переливы как обложка"))
 
     c2 = _Card("Обложка слева", "Как большая карточка над плеером показывает квадратную обложку, "
                                 "и своя картинка, GIF или видео вместо неё.")
